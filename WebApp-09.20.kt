@@ -143,7 +143,7 @@ fun WebView.touch(leftScreenPx: Int, topScreenPx: Int) {
 
 
 /**
-build.gradle.kts
+build.gradle.kts, TYPE_MEDIA
 
  *	implementation("androidx.media3:media3-session:1.11.1")
  *	implementation("androidx.media3:media3-exoplayer:1.11.1")
@@ -151,14 +151,13 @@ build.gradle.kts
 Manifest
 
  *	<uses-permission android:name="android.permission.INTERNET" />
- *	<!-- FLOATING -->
+ *	<!-- TYPE_MEDIA -->
  *	<uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
- *	<!-- FLOATING_MEDIA -->
  *	<uses-permission android:name="android.permission.WAKE_LOCK" />
  *	<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
  *	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
-Service, FLOATING_MEDIA
+Service, TYPE_MEDIA
 
  *	<application>
  *		<service
@@ -242,8 +241,7 @@ class WebApp(
 		const val STYLE_EDGE_TO_EDGE = 1
 		const val STYLE_FULL_SCREEN = 2
 		const val TYPE_NORMAL = 0
-		const val TYPE_FLOATING = 1
-		const val TYPE_FLOATING_MEDIA = 2
+		const val TYPE_MEDIA = 1
 		const val ORIENTATION_AUTO = 0
 		const val ORIENTATION_FIXED_PORTRAIT = 1
 		const val ORIENTATION_FIXED_LANDSCAPE = 2
@@ -349,7 +347,10 @@ class WebApp(
 		if (!ovarlayPermissionAllowed) {
 			MAIN_LOOPER.postDelayed({
 				if (!activity.isFinishing && !activity.isDestroyed) {
-					activity.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, "package:${activity.packageName}".toUri()))
+					activity.startActivity(
+						Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+						"package:${activity.packageName}".toUri())
+					)
 				}
 			}, 1000)
 
@@ -357,6 +358,7 @@ class WebApp(
 		}
 
 
+		// TYPE_NORMAL
 		if (windowType == TYPE_NORMAL) {
 			val param = ViewGroup.LayoutParams(
 				ViewGroup.LayoutParams.MATCH_PARENT,
@@ -366,6 +368,7 @@ class WebApp(
 			// WebView hozzáadás:
 			activity.addContentView(innerWebView, param)
 		}
+		// TYPE_MEDIA
 		else {
 			params = WindowManager.LayoutParams().apply {
 				type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -394,21 +397,15 @@ class WebApp(
 			// WebView hozzáadás:
 			activity.windowManager.addView(innerWebView, params)
 
-
 			// MediaController beállítása:
-			if (windowType == TYPE_FLOATING_MEDIA) {
-				val sessionToken = SessionToken(activity, ComponentName(activity, WebAppPlaybackService::class.java))
-				controllerFuture = MediaController.Builder(activity, sessionToken).buildAsync()
-				controllerFuture.addListener({
-					try {
-						mediaController = controllerFuture.get()
-						// Event regisztrálás:
-						controllerEventCallback.let { callback ->
-							mediaController.addListener(mediaControllerListenerRegister(callback))
-						}
-					} catch (e: Exception) { e.printStackTrace() }
-				}, ContextCompat.getMainExecutor(activity))
-			}
+			val sessionToken = SessionToken(activity, ComponentName(activity, WebAppPlaybackService::class.java))
+			controllerFuture = MediaController.Builder(activity, sessionToken).buildAsync()
+			controllerFuture.addListener({
+				mediaController = controllerFuture.get()
+				controllerEventCallback.let { callback ->
+					mediaController.addListener(mediaControllerListenerRegister(callback))
+				}
+			}, ContextCompat.getMainExecutor(activity))
 		}
 
 		// Folytatás csak ebben a stílusban:
@@ -494,7 +491,7 @@ class WebApp(
 			}
 			activity.onBackPressedDispatcher.addCallback(activity, callback)
 
-			// FLOATING módban Direct Key Listener
+			// MEDIA módban Direct Key Listener
 			innerWebView.isFocusable = true
 			innerWebView.isFocusableInTouchMode = true
 			innerWebView.setOnKeyListener { _, keyCode, event ->
@@ -644,28 +641,20 @@ class WebApp(
 			removeJavascriptInterface("android")
 		}
 
-		// MediaController reset:
-		if (windowType == TYPE_FLOATING_MEDIA) {
-			try {
-				mediaController.stop()
-				mediaController.release()
-			}
-			catch (e: Throwable) { e.printStackTrace() }
 
-			try {
-				MediaController.releaseFuture(controllerFuture)
-			}
-			catch (e: Throwable) { e.printStackTrace() }
+		// Ablakok törlése:
+		if (windowType == TYPE_NORMAL) {
+			try { (innerWebView.parent as? ViewGroup)?.removeView(innerWebView) } catch (e: Throwable) {}
+		}
+		else {
+			mediaController.stop()
+			mediaController.release()
+
+			try { MediaController.releaseFuture(controllerFuture) } catch (e: Throwable) {}
+
+			try { activity.windowManager.removeViewImmediate(innerWebView) } catch (e: Throwable) {}
 		}
 
-		// Ablakok eltávolítása:
-		try {
-			if (windowType == TYPE_NORMAL)
-				(innerWebView.parent as? ViewGroup)?.removeView(innerWebView)
-			else
-				activity.windowManager.removeViewImmediate(innerWebView)
-		}
-		catch (e: Throwable) {}
 
 		// WebView törlés:
 		try { innerWebView.destroy() } catch (e: Throwable) {}
@@ -675,10 +664,15 @@ class WebApp(
 	}
 
 
+
+
+	//--------------------------------------------------------------------------------->
+
 	/**
 	 *	Wait 2 seconds...
 	 */
 	fun waitForMediaController(callback: (Boolean) -> Unit) {
+		if (windowType == TYPE_NORMAL) return
 		if (::mediaController.isInitialized) return callback(true)
 		var maxTries = 0
 		val runnable = object : Runnable {
@@ -699,7 +693,7 @@ class WebApp(
 	 */
 	fun mediaControllerSetup(title: String, background: String = ""): WebApp {
 
-		if (!::mediaController.isInitialized) return this
+		if (windowType == TYPE_NORMAL || !::mediaController.isInitialized) return this
 
 		val parsedColor =
 			if (background.startsWith("#")) background.toColorInt()

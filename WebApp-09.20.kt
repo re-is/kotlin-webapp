@@ -174,9 +174,9 @@ Theme.xml
 
  *	<resources>
  *		<style name="Theme.Absolute" parent="android:Theme.Material.NoActionBar">
- *			<item name="android:statusBarColor">@color/graffite</item>
- *			<item name="android:windowBackground">@color/graffite</item>
- *			<item name="android:navigationBarColor">@color/graffite</item>
+ *			<item name="android:statusBarColor">@color/graphite</item>
+ *			<item name="android:windowBackground">@color/graphite</item>
+ *			<item name="android:navigationBarColor">@color/graphite</item>
  *		</style>
  *	</resources>
  */
@@ -606,7 +606,7 @@ class WebApp(
 						WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
 
 				activity.windowManager.updateViewLayout(innerWebView, params)
-				innerWebView.animate()?.alpha(0f)?.setDuration(50)?.start()
+				innerWebView.animate()?.alpha(0f)?.setDuration(200)?.start()
 			}
 			return
 		}

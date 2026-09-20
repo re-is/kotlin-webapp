@@ -1,12 +1,6 @@
 @file:Suppress("unused")
 
-/*
-	maven { url = java.net.URI("https://jitpack.io") }
-
-	implementation("com.github.Username:MyKotlinLibrary:v1.0.0")
-*/
-
-package com.example.absolute
+package com.example.webapp
 
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint

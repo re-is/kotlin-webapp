@@ -1,5 +1,7 @@
 @file:Suppress("unused")
 
+package com.example.absolute
+
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
 import android.content.ComponentName
@@ -15,8 +17,6 @@ import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
-import android.os.Process.killProcess
-import android.os.Process.myPid
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
@@ -593,28 +593,52 @@ class WebApp(
 
 
 
+	private var resumedActivity = false
 	fun topResumedActivityChanged(isTopResumedActivity: Boolean) {
-		if (!ovarlayPermissionAllowed || windowType == TYPE_NORMAL) return
-		if (!isTopResumedActivity) {
-			// OnPause:
-			if (powerManager.isInteractive) {
-				params.flags = params.flags or
-						WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-						WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-
-				activity.windowManager.updateViewLayout(innerWebView, params)
-				innerWebView.animate()?.alpha(0f)?.setDuration(200)?.start()
+		if (windowType == TYPE_NORMAL) return
+		// onResume:
+		if (isTopResumedActivity) {
+			// Ha nincs engedély onCreate-kor:
+			if (!ovarlayPermissionAllowed) {
+				// Ha visszatéréskor van engedély, újranyitás Destroy és Create:
+				if (Settings.canDrawOverlays(activity)) {
+					MAIN_LOOPER.postDelayed({
+						val intent = activity.packageManager.getLaunchIntentForPackage(activity.packageName)?.apply {
+							addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+						}
+						activity.startActivity(intent)
+						activity.finishAndRemoveTask()
+						Runtime.getRuntime().exit(0)
+					}, 300)
+				}
+				// Ha nincs, akkor csak Destroy:
+				else if (resumedActivity) {
+					MAIN_LOOPER.postDelayed({
+						activity.finishAndRemoveTask()
+					}, 300)
+				}
+				resumedActivity = true
+				return
 			}
+			// Restore:
+			params.flags = params.flags and (
+					WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+					WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+			).inv()
+			activity.windowManager.updateViewLayout(innerWebView, params)
+			innerWebView.requestFocus()
+			innerWebView.animate()?.alpha(1f)?.setDuration(200)?.start()
 			return
 		}
-		// OnResume:
-		params.flags = params.flags and (
-				WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-				WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-		).inv()
-		activity.windowManager.updateViewLayout(innerWebView, params)
-		innerWebView.requestFocus()
-		innerWebView.animate()?.alpha(1f)?.setDuration(200)?.start()
+		// OnPause:
+		if (ovarlayPermissionAllowed && powerManager.isInteractive) {
+			params.flags = params.flags or
+					WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+					WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+
+			activity.windowManager.updateViewLayout(innerWebView, params)
+			innerWebView.animate()?.alpha(0f)?.setDuration(200)?.start()
+		}
 	}
 
 
@@ -660,7 +684,7 @@ class WebApp(
 		try { innerWebView.destroy() } catch (e: Throwable) {}
 
 		// KILL maradék:
-		MAIN_LOOPER.postDelayed({ killProcess(myPid()) }, 300)
+		MAIN_LOOPER.postDelayed({ Runtime.getRuntime().exit(0) }, 300)
 	}
 
 

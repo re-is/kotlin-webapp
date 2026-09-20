@@ -1,7 +1,5 @@
 @file:Suppress("unused")
 
-package com.example.absolute
-
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
 import android.content.ComponentName

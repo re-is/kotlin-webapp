@@ -1,12 +1,18 @@
 @file:Suppress("unused")
 
+import android.Manifest
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Context.POWER_SERVICE
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -36,6 +42,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.toColorInt
@@ -154,6 +161,8 @@ Manifest
  *	<uses-permission android:name="android.permission.WAKE_LOCK" />
  *	<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
  *	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+ *	<uses-permission android:name="android.permission.BLUETOOTH" />
+ *	<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
 Service, TYPE_MEDIA
 
@@ -183,10 +192,50 @@ class WebApp(
 	private var windowStyle: Int = STYLE_NORMAL
 ) {
 
+	private lateinit var bluetoothEventCallback: ((String) -> Unit)
 	private lateinit var controllerEventCallback: ((String) -> Unit)
 	private lateinit var params: WindowManager.LayoutParams
 	private lateinit var controllerFuture: ListenableFuture<MediaController>
 	private val powerManager = activity.getSystemService(POWER_SERVICE) as PowerManager
+	private val filter = IntentFilter().apply {
+		addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+		addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+	}
+
+	private val bluetoothReceiver = object : BroadcastReceiver() {
+		override fun onReceive(context: Context?, intent: Intent?) {
+			when (intent?.action) {
+				BluetoothDevice.ACTION_ACL_CONNECTED,
+				BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+					checkCurrentBluetoothState()
+				}
+			}
+		}
+	}
+
+	private fun checkCurrentBluetoothState() {
+		val bluetoothManager = activity.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+		val adapter = bluetoothManager?.adapter
+
+		if (adapter != null && adapter.isEnabled) {
+			try {
+				if (ActivityCompat.checkSelfPermission(activity, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+					adapter.bondedDevices?.forEach { device ->
+						val isConnectedMethod = device.javaClass.getMethod("isConnected")
+						val isConnected = isConnectedMethod.invoke(device) as Boolean
+
+						if (isConnected) {
+							val deviceName = try { device.name } catch (e: Exception) { device.address }
+							bluetoothEventCallback.invoke(deviceName)
+							return
+						}
+					}
+			} catch (e: Exception) {}
+		}
+
+		bluetoothEventCallback.invoke("none")
+	}
+
 	private val bodyFunction = """
 		(function() {
 
@@ -224,10 +273,10 @@ class WebApp(
 
 			style.textContent = cssText;
 			document.head.appendChild(meta);
-			document.head.appendChild(style);
+			if (obj.topEnabled && obj.btmEnabled) document.head.appendChild(style);
 
 			window.addEventListener('touchstart', (e) => {
-				if (e.touches[0].clientY > (screen.height * 0.95)) e.preventDefault();
+				if (e.touches[0].clientY > (screen.height * 0.94)) e.preventDefault();
 			}, { passive: false });
 
 		})();
@@ -235,11 +284,11 @@ class WebApp(
 
 	// Global ---------------------------------->
 	companion object {
+		const val TYPE_NORMAL = 0
+		const val TYPE_MEDIA = 1
 		const val STYLE_NORMAL = 0
 		const val STYLE_EDGE_TO_EDGE = 1
 		const val STYLE_FULL_SCREEN = 2
-		const val TYPE_NORMAL = 0
-		const val TYPE_MEDIA = 1
 		const val ORIENTATION_AUTO = 0
 		const val ORIENTATION_FIXED_PORTRAIT = 1
 		const val ORIENTATION_FIXED_LANDSCAPE = 2
@@ -286,6 +335,12 @@ class WebApp(
 		val left = (jsLeft * dpiScale).toInt()
 		val top = (jsTop * dpiScale).toInt()
 		innerWebView.touch(left, top)
+	}
+
+	fun bluetoothListener(callback: (name: String) -> Unit): WebApp {
+		bluetoothEventCallback = callback
+		checkCurrentBluetoothState()
+		return this
 	}
 
 
@@ -338,6 +393,11 @@ class WebApp(
 			}
 		}
 
+		// Bluetooth:
+		if (ContextCompat.checkSelfPermission(activity, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+			ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 100)
+		}
+
 		// Engedély ellenőrzése FLOATING-ban:
 		ovarlayPermissionAllowed = windowType == TYPE_NORMAL || Settings.canDrawOverlays(activity)
 
@@ -355,6 +415,8 @@ class WebApp(
 			return this
 		}
 
+		// Bluetooth register csak ha van overlay engedély!!
+		activity.registerReceiver(bluetoothReceiver, filter)
 
 		// TYPE_NORMAL
 		if (windowType == TYPE_NORMAL) {
@@ -645,6 +707,7 @@ class WebApp(
 		if (!ovarlayPermissionAllowed) return
 
 		CookieManager.getInstance().flush()
+		activity.unregisterReceiver(bluetoothReceiver)
 
 		MAIN_LOOPER.removeCallbacksAndMessages(null)
 

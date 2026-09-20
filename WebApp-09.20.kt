@@ -457,14 +457,15 @@ class WebApp(
 			// WebView hozzáadás:
 			activity.windowManager.addView(innerWebView, params)
 
+			// Meghívás, hogy akkor is legyen ha én nem használom. Később felülíródik:
+			mediaControllerListener {}
+
 			// MediaController beállítása:
 			val sessionToken = SessionToken(activity, ComponentName(activity, WebAppPlaybackService::class.java))
 			controllerFuture = MediaController.Builder(activity, sessionToken).buildAsync()
 			controllerFuture.addListener({
 				mediaController = controllerFuture.get()
-				controllerEventCallback.let { callback ->
-					mediaController.addListener(mediaControllerListenerRegister(callback))
-				}
+				mediaController.addListener(mediaControllerListenerRegister(controllerEventCallback))
 			}, ContextCompat.getMainExecutor(activity))
 		}
 
@@ -633,7 +634,7 @@ class WebApp(
 	 *	"index.html"
 	 *	"<html></html>"
 	 */
-	fun loadContent(content: String) {
+	fun loadContent(content: String): WebApp {
 		val input = content.trim()
 		when {
 			input.isEmpty() -> {
@@ -649,6 +650,7 @@ class WebApp(
 				innerWebView.loadDataWithBaseURL("file:///android_asset/", input, "text/html", "UTF-8", null)
 			}
 		}
+		return this
 	}
 
 
@@ -753,6 +755,9 @@ class WebApp(
 
 	//--------------------------------------------------------------------------------->
 
+
+
+
 	/**
 	 *	Wait 2 seconds...
 	 */
@@ -782,8 +787,8 @@ class WebApp(
 
 		val parsedColor =
 			if (background.startsWith("#")) background.toColorInt()
-			else if (isSystemLightMode(activity)) -1
-			else 0
+			else if (isSystemLightMode(activity)) -1	// Fehér
+			else 0										// Fekete
 
 		val bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.RGB_565).apply {
 			eraseColor(parsedColor)
@@ -861,21 +866,21 @@ class WebApp(
 				if (events.isEmpty()) return@Runnable
 
 				if (events == "PLAY") {
-					callback("PLAY")
+					callback.invoke("PLAY")
 				}
 				else if (events == "PAUSE") {
-					callback("PAUSE")
+					callback.invoke("PAUSE")
 				}
 				else if (events.contains("BACK")) {
-					callback("BACK")
+					callback.invoke("BACK")
 					toMain()
 				}
 				else if (events.contains("NEXT")) {
-					callback("NEXT")
+					callback.invoke("NEXT")
 					toMain()
 				}
 				else if (events.contains("BUFFERING") && mediaController.currentPosition < 100 && lastPosition > 0) {
-					callback("BACK")
+					callback.invoke("BACK")
 					toMain()
 					lastPosition = 0
 				}
@@ -889,8 +894,7 @@ class WebApp(
 			}
 
 			override fun onIsPlayingChanged(isPlaying: Boolean) {
-				val state = if (isPlaying) "PLAY" else "PAUSE"
-				change(state)
+				change(if (isPlaying) "PLAY" else "PAUSE")
 			}
 
 			override fun onTracksChanged(tracks: Tracks) {

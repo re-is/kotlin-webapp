@@ -193,14 +193,8 @@ class WebApp(
 ) {
 
 	private lateinit var bluetoothEventCallback: ((String) -> Unit)
-	private lateinit var controllerEventCallback: ((String) -> Unit)
 	private lateinit var params: WindowManager.LayoutParams
-	private lateinit var controllerFuture: ListenableFuture<MediaController>
 	private val powerManager = activity.getSystemService(POWER_SERVICE) as PowerManager
-	private val filter = IntentFilter().apply {
-		addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
-		addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
-	}
 
 	private val bluetoothReceiver = object : BroadcastReceiver() {
 		override fun onReceive(context: Context?, intent: Intent?) {
@@ -313,7 +307,6 @@ class WebApp(
 		var height = "0"
 	}
 
-	lateinit var mediaController: MediaController
 	val statusBar = StatusBar()
 	val navigationBar = NavigationBar()
 	var ovarlayPermissionAllowed = false
@@ -398,7 +391,7 @@ class WebApp(
 			ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 100)
 		}
 
-		// Engedély ellenőrzése FLOATING-ban:
+		// Engedély ellenőrzése MEDIA-ban:
 		ovarlayPermissionAllowed = windowType == TYPE_NORMAL || Settings.canDrawOverlays(activity)
 
 		// Ha nincs engedély:
@@ -416,7 +409,10 @@ class WebApp(
 		}
 
 		// Bluetooth register csak ha van overlay engedély!!
-		activity.registerReceiver(bluetoothReceiver, filter)
+		activity.registerReceiver(bluetoothReceiver, IntentFilter().apply {
+			addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+			addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+		})
 
 		// TYPE_NORMAL
 		if (windowType == TYPE_NORMAL) {
@@ -458,14 +454,16 @@ class WebApp(
 			activity.windowManager.addView(innerWebView, params)
 
 			// Meghívás, hogy akkor is legyen ha én nem használom. Később felülíródik:
-			mediaControllerListener {}
+			media.listener {}
 
 			// MediaController beállítása:
 			val sessionToken = SessionToken(activity, ComponentName(activity, WebAppPlaybackService::class.java))
 			controllerFuture = MediaController.Builder(activity, sessionToken).buildAsync()
 			controllerFuture.addListener({
-				mediaController = controllerFuture.get()
-				mediaController.addListener(mediaControllerListenerRegister(controllerEventCallback))
+				media.controller = controllerFuture.get()
+				mediaControllerListener = mediaControllerListenerRegister()
+				media.controller.addListener(mediaControllerListener!!)
+				controllerReadyCallback.invoke()
 			}, ContextCompat.getMainExecutor(activity))
 		}
 
@@ -484,8 +482,8 @@ class WebApp(
 				if (statusBar.height == "0")
 					statusBar.height = "parseInt(screen.height / ${(innerWebView.height / statusHeight)})"
 
-				if (navigationBar.height == "0")
-					navigationBar.height = if (navigHeight == 0f) "0" else "parseInt(screen.height / ${(innerWebView.height / navigHeight)})"
+				if (navigationBar.height == "0" && navigHeight > 0f)
+					navigationBar.height = "parseInt(screen.height / ${(innerWebView.height / navigHeight)})"
 
 				/* Ez csak kísérletezéshez kell:*/
 				//bodyFunction = activity.assets.open("barHeights.js").bufferedReader().use { it.readText() }
@@ -573,10 +571,10 @@ class WebApp(
 				if (!loaded) return
 				loaded = false
 				view?.alpha = 0f
-				view?.let { v ->
-					onStart?.invoke(v, url)
-					innerWebView.post {
-						innerWebView.evaluateJavascript("screen.width") { width ->
+				view?.let { wv ->
+					onStart?.invoke(wv, url)
+					wv.post {
+						wv.evaluateJavascript("screen.width") { width ->
 							val jsWidth = width?.replace("\"", "")?.toFloat() ?: 1f
 							val dpi = activity.windowManager.currentWindowMetrics.bounds.width() / jsWidth
 							dpiScale = ((dpi * 100).roundToInt() / 100f)
@@ -588,19 +586,21 @@ class WebApp(
 			override fun onPageFinished(view: WebView?, url: String?) {
 				if (loaded) return
 				loaded = true
-				view?.animate()?.alpha(1f)?.setDuration(300)?.start()
-				view?.post {
-					if (windowStyle == STYLE_EDGE_TO_EDGE) {
-						edgeToEdgeBarColors()
-						// Felső/Alsó sávok:
-						val js = bodyFunction.replace(
-							"obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true }",
-							"obj = { topEnabled:${statusBar.enabled}, btmEnabled:${navigationBar.enabled}, topHeight:${statusBar.height}, btmHeight:${navigationBar.height}, topBlur:${statusBar.blur}, btmBlur:${navigationBar.blur} }"
-						)
-						view.evaluateJavascript(js, null)
+				view?.animate()?.alpha(1f)?.setDuration(300)?.startDelay = 100
+				view?.let { wv ->
+					wv.post {
+						if (windowStyle == STYLE_EDGE_TO_EDGE) {
+							edgeToEdgeBarColors()
+							// Felső/Alsó sávok:
+							val js = bodyFunction.replace(
+								"obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true }",
+								"obj = { topEnabled:${statusBar.enabled}, btmEnabled:${navigationBar.enabled}, topHeight:${statusBar.height}, btmHeight:${navigationBar.height}, topBlur:${statusBar.blur}, btmBlur:${navigationBar.blur} }"
+							)
+							wv.evaluateJavascript(js, null)
+						}
+						// callback
+						onLoad?.invoke(wv, url)
 					}
-					// callback
-					onLoad?.invoke(view, url)
 				}
 			}
 
@@ -624,6 +624,7 @@ class WebApp(
 
 		return this
 	}
+
 
 
 	/**
@@ -656,6 +657,11 @@ class WebApp(
 
 
 	private var resumedActivity = false
+	/**
+	 Csak TYPE_MEDIA-hoz kell !
+
+	 *	if (windowType == TYPE_NORMAL) return
+	 */
 	fun topResumedActivityChanged(isTopResumedActivity: Boolean) {
 		if (windowType == TYPE_NORMAL) return
 		// onResume:
@@ -689,7 +695,9 @@ class WebApp(
 			).inv()
 			activity.windowManager.updateViewLayout(innerWebView, params)
 			innerWebView.requestFocus()
-			innerWebView.animate()?.alpha(1f)?.setDuration(200)?.start()
+			// App megnyitásakor még ne fusson le az onLoad miatt !
+			if (resumedActivity) innerWebView.animate()?.alpha(1f)?.setDuration(200)?.startDelay = 0
+			resumedActivity = true
 			return
 		}
 		// OnPause:
@@ -699,7 +707,7 @@ class WebApp(
 					WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
 
 			activity.windowManager.updateViewLayout(innerWebView, params)
-			innerWebView.animate()?.alpha(0f)?.setDuration(200)?.start()
+			innerWebView.animate()?.alpha(0f)?.setDuration(200)?.startDelay = 0
 		}
 	}
 
@@ -714,7 +722,7 @@ class WebApp(
 		MAIN_LOOPER.removeCallbacksAndMessages(null)
 
 		// EdgeToEdge:
-		if (sampleCanvas != null) {
+		sampleCanvas?.let {
 			sampleBitmap?.recycle()
 			sampleBitmap = null
 			sampleCanvas = null
@@ -734,8 +742,14 @@ class WebApp(
 			try { (innerWebView.parent as? ViewGroup)?.removeView(innerWebView) } catch (e: Throwable) {}
 		}
 		else {
-			mediaController.stop()
-			mediaController.release()
+
+			mediaControllerListener?.let {
+				media.controller.removeListener(it)
+				mediaControllerListener = null
+			}
+
+			media.controller.stop()
+			media.controller.release()
 
 			try { MediaController.releaseFuture(controllerFuture) } catch (e: Throwable) {}
 
@@ -752,106 +766,104 @@ class WebApp(
 
 
 
-
+	//--------------------------------------------------------------------------------->
+	//				MEDIA
 	//--------------------------------------------------------------------------------->
 
 
 
+	private lateinit var controllerEventCallback: ((String) -> Unit)
+	private lateinit var controllerReadyCallback: (() -> Unit)
+	private var mediaControllerListener: Player.Listener? = null
+	private lateinit var controllerFuture: ListenableFuture<MediaController>
+	inner class Media {
 
-	/**
-	 *	Wait 2 seconds...
-	 */
-	fun waitForMediaController(callback: (Boolean) -> Unit) {
-		if (windowType == TYPE_NORMAL) return
-		if (::mediaController.isInitialized) return callback(true)
-		var maxTries = 0
-		val runnable = object : Runnable {
-			override fun run() {
-				if (::mediaController.isInitialized) return callback(true)
-				if (maxTries++ > 200) return
-				MAIN_LOOPER.postDelayed(this, 10)
+		// Public !
+		lateinit var controller: MediaController
+
+		/**
+		 *	event -> PLAY, PAUSE, BACK, NEXT
+		 */
+		fun listener(callback: (String) -> Unit) {
+			controllerEventCallback = callback
+		}
+
+		/**
+		 *	Wait to build Controller
+		 */
+		fun waitForController(callback: () -> Unit) {
+			controllerReadyCallback = callback
+		}
+
+		/**
+		 *	title: Zene címe
+		 *	background: hexColor, imageURL, default
+		 */
+		fun setup(title: String, background: String = "") {
+
+			if (windowType == TYPE_NORMAL || !::controller.isInitialized) return
+
+			val parsedColor = (	if (background.startsWith("#")) background.toColorInt()
+								else if (isSystemLightMode(activity)) -1	// Fehér
+								else 0 )									// Fekete
+
+			val bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.RGB_565).apply {
+				eraseColor(parsedColor)
 			}
-		}
-		MAIN_LOOPER.post(runnable)
-	}
+
+			val stream = ByteArrayOutputStream()
+			bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+			val artworkBytes = stream.toByteArray()
 
 
-
-	/**
-	 *	title: Zene címe
-	 *	background: hexColor, imageURL, default
-	 */
-	fun mediaControllerSetup(title: String, background: String = ""): WebApp {
-
-		if (windowType == TYPE_NORMAL || !::mediaController.isInitialized) return this
-
-		val parsedColor =
-			if (background.startsWith("#")) background.toColorInt()
-			else if (isSystemLightMode(activity)) -1	// Fehér
-			else 0										// Fekete
-
-		val bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.RGB_565).apply {
-			eraseColor(parsedColor)
-		}
-
-		val stream = ByteArrayOutputStream()
-		bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-		val artworkBytes = stream.toByteArray()
-
-
-		val noNameItem = MediaItem.Builder().run {
-			setMediaId("noname")
-			setUri("asset:///silent.mp3")
-			setMediaMetadata(MediaMetadata.Builder().run {
-				setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
-				setTitle("...")
+			val noNameItem = MediaItem.Builder().run {
+				setMediaId("noname")
+				setUri("asset:///silent.mp3")
+				setMediaMetadata(MediaMetadata.Builder().run {
+					setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
+					setTitle("...")
+					build()
+				})
 				build()
-			})
-			build()
-		}
+			}
 
-		val mainItem = MediaItem.Builder().run {
-			setMediaId("main")
-			setUri("asset:///silent.mp3")
-			setMediaMetadata(MediaMetadata.Builder().run {
-				// teszt "https://i.ytimg.com/vi/e8_Ddw0H0YA/sddefault.jpg"
-				if (background.startsWith("http")) setArtworkUri(background.toUri())
-				else setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
-				setTitle(title)
+			val mainItem = MediaItem.Builder().run {
+				setMediaId("main")
+				setUri("asset:///silent.mp3")
+				setMediaMetadata(MediaMetadata.Builder().run {
+					// teszt "https://i.ytimg.com/vi/e8_Ddw0H0YA/sddefault.jpg"
+					if (background.startsWith("http")) setArtworkUri(background.toUri())
+					else setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
+					setTitle(title)
+					build()
+				})
 				build()
-			})
-			build()
-		}
+			}
 
-		mediaController.apply {
-			replaceMediaItem(0, noNameItem)
-			replaceMediaItem(1, mainItem)
-			replaceMediaItem(2, noNameItem)
-			prepare()
-			seekTo(1, 0)
-			setPlaybackSpeed(0.1f)
-			playWhenReady = true
-		}
+			controller.apply {
+				replaceMediaItem(0, noNameItem)
+				replaceMediaItem(1, mainItem)
+				replaceMediaItem(2, noNameItem)
+				prepare()
+				seekTo(1, 0)
+				setPlaybackSpeed(0.1f)
+				playWhenReady = true
+			}
 
-		return this
+			return
+		}
 	}
 
+	val media = Media()
 
 
-	/**
-	 *	event -> PLAY, PAUSE, BACK, NEXT
-	 */
-	fun mediaControllerListener(callback: (String) -> Unit): WebApp {
-		controllerEventCallback = callback
-		return this
-	}
 
-	private fun mediaControllerListenerRegister(callback: (String) -> Unit): Player.Listener {
+	private fun mediaControllerListenerRegister(): Player.Listener {
 		return object : Player.Listener {
 
 			fun toMain() {
-				mediaController.seekTo(1, 0)
-				mediaController.pause()
+				media.controller.seekTo(1, 0)
+				media.controller.pause()
 			}
 
 			fun change(e: String) {
@@ -866,25 +878,25 @@ class WebApp(
 				if (events.isEmpty()) return@Runnable
 
 				if (events == "PLAY") {
-					callback.invoke("PLAY")
+					controllerEventCallback.invoke("PLAY")
 				}
 				else if (events == "PAUSE") {
-					callback.invoke("PAUSE")
+					controllerEventCallback.invoke("PAUSE")
 				}
 				else if (events.contains("BACK")) {
-					callback.invoke("BACK")
+					controllerEventCallback.invoke("BACK")
 					toMain()
 				}
 				else if (events.contains("NEXT")) {
-					callback.invoke("NEXT")
+					controllerEventCallback.invoke("NEXT")
 					toMain()
 				}
-				else if (events.contains("BUFFERING") && mediaController.currentPosition < 100 && lastPosition > 0) {
-					callback.invoke("BACK")
+				else if (events.contains("BUFFERING") && media.controller.currentPosition < 100 && lastPosition > 0) {
+					controllerEventCallback.invoke("BACK")
 					toMain()
 					lastPosition = 0
 				}
-				lastPosition = mediaController.currentPosition
+				lastPosition = media.controller.currentPosition
 				events = ""
 			}
 
@@ -899,7 +911,7 @@ class WebApp(
 
 			override fun onTracksChanged(tracks: Tracks) {
 				if (tracks.groups.isEmpty()) return
-				when (mediaController.currentMediaItemIndex) {
+				when (media.controller.currentMediaItemIndex) {
 					0 -> change("BACK")
 					2 -> change("NEXT")
 				}

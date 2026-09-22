@@ -1,5 +1,7 @@
 @file:Suppress("unused")
 
+package com.example.absolute
+
 import android.Manifest
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
@@ -42,6 +44,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
+import androidx.annotation.OptIn
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
@@ -60,6 +63,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaController
 import androidx.media3.session.MediaSession
@@ -461,8 +465,8 @@ class WebApp(
 			controllerFuture = MediaController.Builder(activity, sessionToken).buildAsync()
 			controllerFuture.addListener({
 				media.controller = controllerFuture.get()
-				mediaControllerListener = mediaControllerListenerRegister()
-				media.controller.addListener(mediaControllerListener!!)
+				controllerListener = controllerListenerRegister()
+				media.controller.addListener(controllerListener!!)
 				controllerReadyCallback.invoke()
 			}, ContextCompat.getMainExecutor(activity))
 		}
@@ -586,7 +590,7 @@ class WebApp(
 			override fun onPageFinished(view: WebView?, url: String?) {
 				if (loaded) return
 				loaded = true
-				view?.animate()?.alpha(1f)?.setDuration(300)?.startDelay = 100
+				view?.animate()?.alpha(1f)?.setDuration(600)?.start()
 				view?.let { wv ->
 					wv.post {
 						if (windowStyle == STYLE_EDGE_TO_EDGE) {
@@ -696,7 +700,7 @@ class WebApp(
 			activity.windowManager.updateViewLayout(innerWebView, params)
 			innerWebView.requestFocus()
 			// App megnyitásakor még ne fusson le az onLoad miatt !
-			if (resumedActivity) innerWebView.animate()?.alpha(1f)?.setDuration(200)?.startDelay = 0
+			if (resumedActivity) innerWebView.animate()?.alpha(1f)?.setDuration(100)?.startDelay = 300
 			resumedActivity = true
 			return
 		}
@@ -743,9 +747,9 @@ class WebApp(
 		}
 		else {
 
-			mediaControllerListener?.let {
+			controllerListener?.let {
 				media.controller.removeListener(it)
-				mediaControllerListener = null
+				controllerListener = null
 			}
 
 			media.controller.stop()
@@ -774,7 +778,7 @@ class WebApp(
 
 	private lateinit var controllerEventCallback: ((String) -> Unit)
 	private lateinit var controllerReadyCallback: (() -> Unit)
-	private var mediaControllerListener: Player.Listener? = null
+	private var controllerListener: Player.Listener? = null
 	private lateinit var controllerFuture: ListenableFuture<MediaController>
 	inner class Media {
 
@@ -849,8 +853,6 @@ class WebApp(
 				setPlaybackSpeed(0.1f)
 				playWhenReady = true
 			}
-
-			return
 		}
 	}
 
@@ -858,7 +860,7 @@ class WebApp(
 
 
 
-	private fun mediaControllerListenerRegister(): Player.Listener {
+	private fun controllerListenerRegister(): Player.Listener {
 		return object : Player.Listener {
 
 			fun toMain() {
@@ -872,10 +874,8 @@ class WebApp(
 				MAIN_LOOPER.postDelayed(ev, 200)
 			}
 
-			var lastPosition = 0L
 			var events = ""
 			val ev = Runnable {
-				if (events.isEmpty()) return@Runnable
 
 				if (events == "PLAY") {
 					controllerEventCallback.invoke("PLAY")
@@ -891,18 +891,8 @@ class WebApp(
 					controllerEventCallback.invoke("NEXT")
 					toMain()
 				}
-				else if (events.contains("BUFFERING") && media.controller.currentPosition < 100 && lastPosition > 0) {
-					controllerEventCallback.invoke("BACK")
-					toMain()
-					lastPosition = 0
-				}
-				lastPosition = media.controller.currentPosition
-				events = ""
-			}
 
-			override fun onPlaybackStateChanged(playbackState: Int) {
-				super.onPlaybackStateChanged(playbackState)
-				if (playbackState == Player.STATE_BUFFERING) change("BUFFERING")
+				events = ""
 			}
 
 			override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -932,21 +922,30 @@ class WebAppPlaybackService : MediaSessionService(), MediaSession.Callback {
 
 	private lateinit var mediaSession: MediaSession
 
+	@OptIn(UnstableApi::class)
 	override fun onCreate() {
 		super.onCreate()
 
 		"MediaService, onCreate".log()
 
-		val player = ExoPlayer.Builder(this).build().apply {
-			setWakeMode(C.WAKE_MODE_NETWORK)
-			repeatMode = ExoPlayer.REPEAT_MODE_ONE
-			setAudioAttributes(AudioAttributes.Builder()
-				.setContentType(AUDIO_CONTENT_TYPE_MUSIC)
-				.setUsage(USAGE_MEDIA)
-				.build(), false)
+		val attr = AudioAttributes.Builder().run {
+			setContentType(AUDIO_CONTENT_TYPE_MUSIC)
+			setUsage(USAGE_MEDIA)
+			build()
 		}
 
-		mediaSession = MediaSession.Builder(this, player).setCallback(this).build()
+		val player = ExoPlayer.Builder(this).run {
+			setWakeMode(C.WAKE_MODE_NETWORK)
+			setMaxSeekToPreviousPositionMs(Long.MAX_VALUE)
+			setAudioAttributes(attr, false)
+			build()
+		}
+
+		mediaSession = MediaSession.Builder(this, player).run {
+			setCallback(WebAppPlaybackService())
+			setId("WebAppSession:$packageName")
+			build()
+		}
 	}
 
 	override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession

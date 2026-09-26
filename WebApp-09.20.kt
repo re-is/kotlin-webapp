@@ -32,6 +32,7 @@ import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowManager
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -42,7 +43,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
-import androidx.annotation.OptIn
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
@@ -194,89 +194,125 @@ class WebApp(
 	private var windowStyle: Int = STYLE_NORMAL
 ) {
 
-	private lateinit var bluetoothEventCallback: ((String) -> Unit)
-	private lateinit var params: WindowManager.LayoutParams
+	private lateinit var webViewParams: WindowManager.LayoutParams
 	private val powerManager = activity.getSystemService(POWER_SERVICE) as PowerManager
+
+
+	class JsInterface(private val wv: WebView) {
+		private var receiverCallback: ((id: String, params: List<String>) -> Unit) = { _,_ -> }
+
+		val bodyFunction = """
+			(function() {
+
+				if (window.newWebView) return;
+				window.newWebView = 1;
+
+				const
+					meta = document.createElement('meta'),
+					obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true };
+
+				meta.name = 'viewport';
+				meta.content = 'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no';
+
+				let cssText = (
+					'body {' +
+						(obj.topEnabled ? ('padding-top: ' + obj.topHeight + 'px;') : '') +
+						(obj.btmEnabled ? ('padding-bottom: ' + obj.btmHeight + 'px;') : '') +
+					'} body::before {' +
+						'position: fixed;' +
+						'content: "";' +
+						'inset: 0;' +
+						'pointer-events: none;' +
+						'backdrop-filter: blur(10px);' +
+						'z-index: 10000;' +
+						'mask-image: linear-gradient(to bottom,');
+			
+				if (obj.topEnabled && obj.topBlur) cssText += ('black ' + (obj.topHeight * 0.8) + 'px, transparent ' + obj.topHeight + 'px');
+
+				if (obj.topEnabled && obj.topBlur && obj.btmEnabled && obj.btmBlur) cssText += ',';
+
+				if (obj.btmEnabled && obj.btmBlur) cssText += ('transparent calc(100% - ' + obj.btmHeight + 'px), black calc(100% - ' + (obj.btmHeight * 0.6) + 'px)');
+
+				cssText += ')}';
+
+				document.head.appendChild(meta);
+
+				if (obj.topEnabled || obj.btmEnabled) {
+					const style = document.createElement('style');
+					style.textContent = cssText;
+					document.head.appendChild(style);
+				}
+
+				window.addEventListener('touchmove', (e) => {
+					if (e.touches[0].clientY > (window.innerHeight * 0.93)) e.preventDefault();
+				}, { passive: false });
+
+			})();
+		""".trimIndent()
+
+
+		fun listener(callback: ((id: String, params: List<String>) -> Unit)) {
+			receiverCallback = callback
+		}
+
+		@JavascriptInterface
+		fun command(id: String, param: String) {
+			wv.post {
+				val params = param.split(";")
+					.map { it.trim() }
+					.filter { it.isNotEmpty() }
+				receiverCallback.invoke(id, params)
+			}
+		}
+
+		fun send(script: String, callback: ((String?) -> Unit)? = null) {
+			wv.post {
+				wv.evaluateJavascript(script) { callback?.invoke(it) }
+			}
+		}
+	}
+
+
+
+	class BlueTooth(private val act: ComponentActivity) {
+		private var bluetoothEventCallback: ((String) -> Unit) = {}
+
+		fun connectedName(callback: ((name: String) -> Unit) ?= null) {
+			callback?.let { bluetoothEventCallback = it }
+
+			val bluetoothManager = act.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+			val adapter = bluetoothManager?.adapter
+
+			if (adapter != null && adapter.isEnabled) {
+				try {
+					if (ActivityCompat.checkSelfPermission(act, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+						adapter.bondedDevices?.forEach { device ->
+							val isConnectedMethod = device.javaClass.getMethod("isConnected")
+							val isConnected = isConnectedMethod.invoke(device) as Boolean
+
+							if (isConnected) {
+								val deviceName = try { device.name } catch (e: Exception) { device.address }
+								bluetoothEventCallback.invoke(deviceName)
+								return
+							}
+						}
+				} catch (e: Exception) {}
+			}
+
+			bluetoothEventCallback.invoke("none")
+		}
+	}
 
 	private val bluetoothReceiver = object : BroadcastReceiver() {
 		override fun onReceive(context: Context?, intent: Intent?) {
 			when (intent?.action) {
-				BluetoothDevice.ACTION_ACL_CONNECTED,
-				BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
-					checkCurrentBluetoothState()
+				BluetoothDevice.ACTION_ACL_CONNECTED, BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+					bluetooth.connectedName()
 				}
 			}
 		}
 	}
 
-	private fun checkCurrentBluetoothState() {
-		val bluetoothManager = activity.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-		val adapter = bluetoothManager?.adapter
-
-		if (adapter != null && adapter.isEnabled) {
-			try {
-				if (ActivityCompat.checkSelfPermission(activity, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
-					adapter.bondedDevices?.forEach { device ->
-						val isConnectedMethod = device.javaClass.getMethod("isConnected")
-						val isConnected = isConnectedMethod.invoke(device) as Boolean
-
-						if (isConnected) {
-							val deviceName = try { device.name } catch (e: Exception) { device.address }
-							bluetoothEventCallback.invoke(deviceName)
-							return
-						}
-					}
-			} catch (e: Exception) {}
-		}
-
-		bluetoothEventCallback.invoke("none")
-	}
-
-	private val bodyFunction = """
-		(function() {
-
-			if (window.newWebView) return;
-			window.newWebView = 1;
-
-			const
-				style = document.createElement('style'),
-				meta = document.createElement('meta'),
-				obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true };
-
-			meta.name = 'viewport';
-			meta.content = 'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no';
-
-			let cssText = (
-				'body {' +
-					(obj.topEnabled ? ('padding-top: ' + obj.topHeight + 'px;') : '') +
-					(obj.btmEnabled ? ('padding-bottom: ' + obj.btmHeight + 'px;') : '') +
-				'} body::before {' +
-					'position: fixed;' +
-					'content: "";' +
-					'inset: 0;' +
-					'pointer-events: none;' +
-					'backdrop-filter: blur(10px);' +
-					'z-index: 10000;' +
-					'mask-image: linear-gradient(to bottom,');
-
-			if (obj.topEnabled && obj.topBlur) cssText += ('black ' + (obj.topHeight * 0.8) + 'px, transparent ' + obj.topHeight + 'px');
-
-			if (obj.topEnabled && obj.topBlur && obj.btmEnabled && obj.btmBlur) cssText += ',';
-
-			if (obj.btmEnabled && obj.btmBlur) cssText += ('transparent calc(100% - ' + obj.btmHeight + 'px), black calc(100% - ' + (obj.btmHeight * 0.6) + 'px)');
-
-			cssText += ')}';
-
-			style.textContent = cssText;
-			document.head.appendChild(meta);
-			if (obj.topEnabled && obj.btmEnabled) document.head.appendChild(style);
-
-			window.addEventListener('touchstart', (e) => {
-				if (e.touches[0].clientY > (screen.height * 0.94)) e.preventDefault();
-			}, { passive: false });
-
-		})();
-	""".trimIndent()
 
 	// Global ---------------------------------->
 	companion object {
@@ -290,11 +326,13 @@ class WebApp(
 		const val ORIENTATION_FIXED_LANDSCAPE = 2
 	}
 
+
 	// Protected ------------------------------->
 	lateinit var innerWebView: WebView
 		private set
 	var dpiScale = 1f
 		private set
+
 
 	// Instance -------------------------------->
 	class StatusBar {
@@ -308,6 +346,10 @@ class WebApp(
 		var blur = true
 		var height = "0"
 	}
+
+	lateinit var javaScript : JsInterface
+	lateinit var bluetooth : BlueTooth
+	lateinit var media : Media
 
 	val statusBar = StatusBar()
 	val navigationBar = NavigationBar()
@@ -332,12 +374,6 @@ class WebApp(
 		innerWebView.touch(left, top)
 	}
 
-	fun bluetoothListener(callback: (name: String) -> Unit): WebApp {
-		bluetoothEventCallback = callback
-		checkCurrentBluetoothState()
-		return this
-	}
-
 
 
 	@SuppressLint(
@@ -348,7 +384,7 @@ class WebApp(
 	)
 	fun build(): WebApp {
 
-		// Törli a Destroy/ killProcess-t !
+		// Törli a Destroy exit-et !
 		MAIN_LOOPER.removeCallbacksAndMessages(null)
 
 		// Nagyméretű ablaknál:
@@ -380,13 +416,18 @@ class WebApp(
 				}
 			}
 			setBackgroundColor(Color.TRANSPARENT)
-			addJavascriptInterface(activity, "android")
 
 			if (windowStyle == STYLE_EDGE_TO_EDGE) setOnTouchListener { _, event ->
 				if (event.action == MotionEvent.ACTION_UP) edgeToEdgeBarColors()
 				false
 			}
 		}
+
+		// Osztályok:
+		media = Media(activity, innerWebView)
+		bluetooth = BlueTooth(activity)
+		javaScript = JsInterface(innerWebView)
+		innerWebView.addJavascriptInterface(javaScript, "android")
 
 		// Bluetooth:
 		if (ContextCompat.checkSelfPermission(activity, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
@@ -428,7 +469,7 @@ class WebApp(
 		}
 		// TYPE_MEDIA
 		else {
-			params = WindowManager.LayoutParams().apply {
+			webViewParams = WindowManager.LayoutParams().apply {
 				type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
 				format = PixelFormat.TRANSLUCENT
 				gravity = (Gravity.TOP or Gravity.START)
@@ -453,20 +494,9 @@ class WebApp(
 			}
 
 			// WebView hozzáadás:
-			activity.windowManager.addView(innerWebView, params)
+			activity.windowManager.addView(innerWebView, webViewParams)
 
-			// Meghívás, hogy akkor is legyen ha én nem használom. Később felülíródik:
-			media.listener {}
-
-			// MediaController beállítása:
-			val sessionToken = SessionToken(activity, ComponentName(activity, WebAppPlaybackService::class.java))
-			controllerFuture = MediaController.Builder(activity, sessionToken).buildAsync()
-			controllerFuture.addListener({
-				media.controller = controllerFuture.get()
-				controllerListener = controllerListenerRegister()
-				media.controller.addListener(controllerListener!!)
-				controllerReadyCallback.invoke()
-			}, ContextCompat.getMainExecutor(activity))
+			media.build()
 		}
 
 		// Folytatás csak ebben a stílusban:
@@ -482,10 +512,10 @@ class WebApp(
 				val navigHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom.toFloat()
 
 				if (statusBar.height == "0")
-					statusBar.height = "parseInt(screen.height / ${(innerWebView.height / statusHeight)})"
+					statusBar.height = "parseInt(window.innerHeight / ${(innerWebView.height / statusHeight)})"
 
 				if (navigationBar.height == "0" && navigHeight > 0f)
-					navigationBar.height = "parseInt(screen.height / ${(innerWebView.height / navigHeight)})"
+					navigationBar.height = "parseInt(window.innerHeight / ${(innerWebView.height / navigHeight)})"
 
 				/* Ez csak kísérletezéshez kell:*/
 				//bodyFunction = activity.assets.open("barHeights.js").bufferedReader().use { it.readText() }
@@ -576,7 +606,7 @@ class WebApp(
 				view?.let { wv ->
 					onStart?.invoke(wv, url)
 					wv.post {
-						wv.evaluateJavascript("screen.width") { width ->
+						wv.evaluateJavascript("window.innerWidth") { width ->
 							val jsWidth = width?.replace("\"", "")?.toFloat() ?: 1f
 							val dpi = activity.windowManager.currentWindowMetrics.bounds.width() / jsWidth
 							dpiScale = ((dpi * 100).roundToInt() / 100f)
@@ -594,7 +624,7 @@ class WebApp(
 						if (windowStyle == STYLE_EDGE_TO_EDGE) {
 							edgeToEdgeBarColors()
 							// Felső/Alsó sávok:
-							val js = bodyFunction.replace(
+							val js = javaScript.bodyFunction.replace(
 								"obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true }",
 								"obj = { topEnabled:${statusBar.enabled}, btmEnabled:${navigationBar.enabled}, topHeight:${statusBar.height}, btmHeight:${navigationBar.height}, topBlur:${statusBar.blur}, btmBlur:${navigationBar.blur} }"
 							)
@@ -659,6 +689,7 @@ class WebApp(
 
 
 	private var resumedActivity = false
+	private var screenOn = false
 	/**
 	 Csak TYPE_MEDIA-hoz kell !
 
@@ -687,28 +718,34 @@ class WebApp(
 						activity.finishAndRemoveTask()
 					}, 300)
 				}
-				resumedActivity = true
+				else resumedActivity = true
 				return
 			}
 			// Restore:
-			params.flags = params.flags and (
+			webViewParams.flags = webViewParams.flags and (
 					WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
 					WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
 			).inv()
-			activity.windowManager.updateViewLayout(innerWebView, params)
+			activity.windowManager.updateViewLayout(innerWebView, webViewParams)
 			innerWebView.requestFocus()
 			// App megnyitásakor még ne fusson le az onLoad miatt !
-			if (resumedActivity) innerWebView.animate()?.alpha(1f)?.setDuration(100)?.startDelay = 300
-			resumedActivity = true
+			if (resumedActivity) {
+				// Zárt képernyő utáni visszatéréskor:
+				if (!screenOn) innerWebView.alpha = 1f
+				else innerWebView.animate()?.alpha(1f)?.setDuration(100)?.startDelay = 300
+			}
+			else resumedActivity = true
 			return
 		}
 		// OnPause:
-		if (ovarlayPermissionAllowed && powerManager.isInteractive) {
-			params.flags = params.flags or
+		if (ovarlayPermissionAllowed) {
+			screenOn = powerManager.isInteractive
+
+			webViewParams.flags = webViewParams.flags or
 					WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
 					WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
 
-			activity.windowManager.updateViewLayout(innerWebView, params)
+			activity.windowManager.updateViewLayout(innerWebView, webViewParams)
 			innerWebView.animate()?.alpha(0f)?.setDuration(200)?.startDelay = 0
 		}
 	}
@@ -719,9 +756,20 @@ class WebApp(
 		if (!ovarlayPermissionAllowed) return
 
 		CookieManager.getInstance().flush()
+
 		activity.unregisterReceiver(bluetoothReceiver)
 
-		MAIN_LOOPER.removeCallbacksAndMessages(null)
+
+		// Ablakok törlése:
+		if (windowType == TYPE_NORMAL) {
+			try { (innerWebView.parent as? ViewGroup)?.removeView(innerWebView) } catch (e: Throwable) {}
+		}
+		else {
+			try { activity.windowManager.removeViewImmediate(innerWebView) } catch (e: Throwable) {}
+
+			media.destroy()
+		}
+
 
 		// EdgeToEdge:
 		sampleCanvas?.let {
@@ -738,173 +786,11 @@ class WebApp(
 			removeJavascriptInterface("android")
 		}
 
-
-		// Ablakok törlése:
-		if (windowType == TYPE_NORMAL) {
-			try { (innerWebView.parent as? ViewGroup)?.removeView(innerWebView) } catch (e: Throwable) {}
-		}
-		else {
-
-			controllerListener?.let {
-				media.controller.removeListener(it)
-				controllerListener = null
-			}
-
-			media.controller.stop()
-			media.controller.release()
-
-			try { MediaController.releaseFuture(controllerFuture) } catch (e: Throwable) {}
-
-			try { activity.windowManager.removeViewImmediate(innerWebView) } catch (e: Throwable) {}
-		}
-
-
 		// WebView törlés:
 		try { innerWebView.destroy() } catch (e: Throwable) {}
 
-		// KILL maradék:
+		// Maradék:
 		MAIN_LOOPER.postDelayed({ Runtime.getRuntime().exit(0) }, 300)
-	}
-
-
-
-	//--------------------------------------------------------------------------------->
-	//				MEDIA
-	//--------------------------------------------------------------------------------->
-
-
-
-	private lateinit var controllerEventCallback: ((String) -> Unit)
-	private lateinit var controllerReadyCallback: (() -> Unit)
-	private var controllerListener: Player.Listener? = null
-	private lateinit var controllerFuture: ListenableFuture<MediaController>
-	inner class Media {
-
-		// Public !
-		lateinit var controller: MediaController
-
-		/**
-		 *	event -> PLAY, PAUSE, BACK, NEXT
-		 */
-		fun listener(callback: (String) -> Unit) {
-			controllerEventCallback = callback
-		}
-
-		/**
-		 *	Wait to build Controller
-		 */
-		fun waitForController(callback: () -> Unit) {
-			controllerReadyCallback = callback
-		}
-
-		/**
-		 *	title: Zene címe
-		 *	background: hexColor, imageURL, default
-		 */
-		fun setup(title: String, background: String = "") {
-
-			if (windowType == TYPE_NORMAL || !::controller.isInitialized) return
-
-			val parsedColor = (	if (background.startsWith("#")) background.toColorInt()
-								else if (isSystemLightMode(activity)) -1	// Fehér
-								else 0 )									// Fekete
-
-			val bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.RGB_565).apply {
-				eraseColor(parsedColor)
-			}
-
-			val stream = ByteArrayOutputStream()
-			bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-			val artworkBytes = stream.toByteArray()
-
-
-			val noNameItem = MediaItem.Builder().run {
-				setMediaId("noname")
-				setUri("asset:///silent.mp3")
-				setMediaMetadata(MediaMetadata.Builder().run {
-					setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
-					setTitle("...")
-					build()
-				})
-				build()
-			}
-
-			val mainItem = MediaItem.Builder().run {
-				setMediaId("main")
-				setUri("asset:///silent.mp3")
-				setMediaMetadata(MediaMetadata.Builder().run {
-					// teszt "https://i.ytimg.com/vi/e8_Ddw0H0YA/sddefault.jpg"
-					if (background.startsWith("http")) setArtworkUri(background.toUri())
-					else setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
-					setTitle(title)
-					build()
-				})
-				build()
-			}
-
-			controller.apply {
-				replaceMediaItem(0, noNameItem)
-				replaceMediaItem(1, mainItem)
-				replaceMediaItem(2, noNameItem)
-				prepare()
-				seekTo(1, 0)
-				setPlaybackSpeed(0.1f)
-				playWhenReady = true
-			}
-		}
-	}
-
-	val media = Media()
-
-
-
-	private fun controllerListenerRegister(): Player.Listener {
-		return object : Player.Listener {
-
-			fun toMain() {
-				media.controller.seekTo(1, 0)
-				media.controller.pause()
-			}
-
-			fun change(e: String) {
-				events += e
-				MAIN_LOOPER.removeCallbacks(ev)
-				MAIN_LOOPER.postDelayed(ev, 200)
-			}
-
-			var events = ""
-			val ev = Runnable {
-
-				if (events == "PLAY") {
-					controllerEventCallback.invoke("PLAY")
-				}
-				else if (events == "PAUSE") {
-					controllerEventCallback.invoke("PAUSE")
-				}
-				else if (events.contains("BACK")) {
-					controllerEventCallback.invoke("BACK")
-					toMain()
-				}
-				else if (events.contains("NEXT")) {
-					controllerEventCallback.invoke("NEXT")
-					toMain()
-				}
-
-				events = ""
-			}
-
-			override fun onIsPlayingChanged(isPlaying: Boolean) {
-				change(if (isPlaying) "PLAY" else "PAUSE")
-			}
-
-			override fun onTracksChanged(tracks: Tracks) {
-				if (tracks.groups.isEmpty()) return
-				when (media.controller.currentMediaItemIndex) {
-					0 -> change("BACK")
-					2 -> change("NEXT")
-				}
-			}
-		}
 	}
 }
 
@@ -914,13 +800,172 @@ class WebApp(
 
 
 
+class Media(
+	private val act: ComponentActivity,
+	private val wv: WebView
+) {
+	private var controllerPlayCallback: (() -> Unit) = {}
+	private var controllerPauseCallback: (() -> Unit) = {}
+	private var controllerBackCallback: (() -> Unit) = {}
+	private var controllerNextCallback: (() -> Unit) = {}
+	private var controllerReadyCallback: (() -> Unit) = {}
+	private lateinit var future: ListenableFuture<MediaController>
+	// Public !
+	lateinit var controller: MediaController
+
+	fun events(
+		onPlay: (() -> Unit) ?= null,
+		onPause: (() -> Unit) ?= null,
+		onBack: (() -> Unit) ?= null,
+		onNext: (() -> Unit) ?= null
+	) {
+		onPlay?.let { controllerPlayCallback = it }
+		onPause?.let { controllerPauseCallback = it }
+		onBack?.let { controllerBackCallback = it }
+		onNext?.let { controllerNextCallback = it }
+	}
+
+	fun build() {
+		val sessionToken = SessionToken(act, ComponentName(act, WebAppPlaybackService::class.java))
+		future = MediaController.Builder(act, sessionToken).buildAsync()
+		future.addListener({
+			controller = future.get()
+			controller.addListener(object : Player.Listener {
+
+				fun toMain() {
+					controller.seekTo(1, 0)
+					controller.pause()
+				}
+
+				fun change(e: String) {
+					events += e
+					MAIN_LOOPER.removeCallbacks(ev)
+					MAIN_LOOPER.postDelayed(ev, 200)
+				}
+
+				var events = ""
+				val ev = Runnable {
+
+					if (events == "PLAY") {
+						controllerPlayCallback.invoke()
+					}
+					else if (events == "PAUSE") {
+						controllerPauseCallback.invoke()
+					}
+					else if (events.contains("BACK")) {
+						controllerBackCallback.invoke()
+						toMain()
+					}
+					else if (events.contains("NEXT")) {
+						controllerNextCallback.invoke()
+						toMain()
+					}
+
+					events = ""
+				}
+
+				override fun onIsPlayingChanged(isPlaying: Boolean) {
+					change(if (isPlaying) "PLAY" else "PAUSE")
+				}
+
+				override fun onTracksChanged(tracks: Tracks) {
+					if (tracks.groups.isEmpty()) return
+					when (controller.currentMediaItemIndex) {
+						0 -> change("BACK")
+						2 -> change("NEXT")
+					}
+				}
+			})
+			// Készen áll a Vezérlő:
+			wv.post { controllerReadyCallback.invoke() }
+		}, ContextCompat.getMainExecutor(act))
+	}
+
+	/**
+	 *	Wait to build Controller
+	 */
+	fun waitForController(callback: () -> Unit) {
+		controllerReadyCallback = callback
+	}
+
+	/**
+	 *	title: Zene címe
+	 *	background: hexColor, imageURL, default
+	 */
+	fun setup(title: String, background: String = "") {
+
+		if (!::controller.isInitialized) return
+
+		val parsedColor = (	if (background.startsWith("#")) background.toColorInt()
+		else if (isSystemLightMode(act)) -1	// Fehér
+		else 0 )							// Fekete
+
+		val bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.RGB_565).apply {
+			eraseColor(parsedColor)
+		}
+
+		val stream = ByteArrayOutputStream()
+		bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+		val artworkBytes = stream.toByteArray()
 
 
-class WebAppPlaybackService : MediaSessionService(), MediaSession.Callback {
+		val noNameItem = MediaItem.Builder().run {
+			setMediaId("noname")
+			setUri("asset:///silent.mp3")
+			setMediaMetadata(MediaMetadata.Builder().run {
+				setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
+				setTitle("...")
+				build()
+			})
+			build()
+		}
+
+		val mainItem = MediaItem.Builder().run {
+			setMediaId("main")
+			setUri("asset:///silent.mp3")
+			setMediaMetadata(MediaMetadata.Builder().run {
+				// teszt "https://i.ytimg.com/vi/e8_Ddw0H0YA/sddefault.jpg"
+				if (background.startsWith("http")) setArtworkUri(background.toUri())
+				else setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
+				setTitle(title)
+				build()
+			})
+			build()
+		}
+
+		controller.apply {
+			replaceMediaItem(0, noNameItem)
+			replaceMediaItem(1, mainItem)
+			replaceMediaItem(2, noNameItem)
+			prepare()
+			seekTo(1, 0)
+			setPlaybackSpeed(0.1f)
+			playWhenReady = true
+		}
+	}
+
+
+	fun destroy() {
+		controllerPlayCallback = {}
+		controllerPauseCallback = {}
+		controllerBackCallback = {}
+		controllerNextCallback = {}
+		controllerReadyCallback = {}
+
+		controller.stop()
+		controller.release()
+
+		try { MediaController.releaseFuture(future) } catch (e: Throwable) {}
+	}
+}
+
+
+
+class WebAppPlaybackService : MediaSessionService() {
 
 	private lateinit var mediaSession: MediaSession
 
-	@OptIn(UnstableApi::class)
+	@UnstableApi
 	override fun onCreate() {
 		super.onCreate()
 
@@ -940,7 +985,6 @@ class WebAppPlaybackService : MediaSessionService(), MediaSession.Callback {
 		}
 
 		mediaSession = MediaSession.Builder(this, player).run {
-			setCallback(WebAppPlaybackService())
 			setId("WebAppSession:$packageName")
 			build()
 		}

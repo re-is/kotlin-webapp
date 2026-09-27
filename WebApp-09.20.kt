@@ -72,7 +72,6 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.net.Inet4Address
 import java.net.NetworkInterface
-import kotlin.math.roundToInt
 
 
 //-------------------------------------------------------------------------->
@@ -93,17 +92,6 @@ fun View.moveX(leftPx: Int, ms: Long) {
 	}
 }
 
-
-fun networkGateWay(): String {
-	val address = NetworkInterface.getNetworkInterfaces()
-		?.asSequence()
-		?.filter { it.name.contains("lan") }
-		?.flatMap { it.inetAddresses.asSequence() }
-		?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
-
-	val ip = address?.hostAddress ?: return ""
-	return "http://${ip.substringBeforeLast(".")}.254"
-}
 
 
 fun isSystemLightMode(context: Context): Boolean {
@@ -127,15 +115,6 @@ fun webResourceRequestBlock(): WebResourceResponse = WebResourceResponse("text/p
 
 
 //-------------------------------------------------------------------------->
-
-
-fun WebView.evalJs(js: String, callback: ((String?) -> Unit)? = null) {
-	this.post {
-		this.evaluateJavascript(js) { result ->
-			callback?.invoke(result)
-		}
-	}
-}
 
 
 fun WebView.touch(leftScreenPx: Int, topScreenPx: Int) {
@@ -194,82 +173,54 @@ class WebApp(
 	private var windowStyle: Int = STYLE_NORMAL
 ) {
 
-	private lateinit var webViewParams: WindowManager.LayoutParams
-	private val powerManager = activity.getSystemService(POWER_SERVICE) as PowerManager
-
-
-	class JsInterface(private val wv: WebView) {
+	class JsInterface(private val wv: WebView, private val dpi: Float) {
 		private var receiverCallback: ((id: String, params: List<String>) -> Unit) = { _,_ -> }
 
-		val bodyFunction = """
-			(function() {
-
-				if (window.newWebView) return;
-				window.newWebView = 1;
-
-				const
-					meta = document.createElement('meta'),
-					obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true };
-
-				meta.name = 'viewport';
-				meta.content = 'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no';
-
-				let cssText = (
-					'body {' +
-						(obj.topEnabled ? ('padding-top: ' + obj.topHeight + 'px;') : '') +
-						(obj.btmEnabled ? ('padding-bottom: ' + obj.btmHeight + 'px;') : '') +
-					'} body::before {' +
-						'position: fixed;' +
-						'content: "";' +
-						'inset: 0;' +
-						'pointer-events: none;' +
-						'backdrop-filter: blur(10px);' +
-						'z-index: 10000;' +
-						'mask-image: linear-gradient(to bottom,');
-			
-				if (obj.topEnabled && obj.topBlur) cssText += ('black ' + (obj.topHeight * 0.8) + 'px, transparent ' + obj.topHeight + 'px');
-
-				if (obj.topEnabled && obj.topBlur && obj.btmEnabled && obj.btmBlur) cssText += ',';
-
-				if (obj.btmEnabled && obj.btmBlur) cssText += ('transparent calc(100% - ' + obj.btmHeight + 'px), black calc(100% - ' + (obj.btmHeight * 0.6) + 'px)');
-
-				cssText += ')}';
-
-				document.head.appendChild(meta);
-
-				if (obj.topEnabled || obj.btmEnabled) {
-					const style = document.createElement('style');
-					style.textContent = cssText;
-					document.head.appendChild(style);
-				}
-
-				window.addEventListener('touchmove', (e) => {
-					if (e.touches[0].clientY > (window.innerHeight * 0.93)) e.preventDefault();
-				}, { passive: false });
-
-			})();
-		""".trimIndent()
-
-
-		fun listener(callback: ((id: String, params: List<String>) -> Unit)) {
+		fun onCommand(callback: ((id: String, params: List<String>) -> Unit)) {
 			receiverCallback = callback
 		}
 
 		@JavascriptInterface
 		fun command(id: String, param: String) {
-			wv.post {
-				val params = param.split(";")
+			MAIN_LOOPER.post {
+				val params = param.split(",")
 					.map { it.trim() }
 					.filter { it.isNotEmpty() }
 				receiverCallback.invoke(id, params)
 			}
 		}
 
-		fun send(script: String, callback: ((String?) -> Unit)? = null) {
+		fun send(js: String, callback: ((String) -> Unit)? = null) {
 			wv.post {
-				wv.evaluateJavascript(script) { callback?.invoke(it) }
+				val script = if (js.startsWith("[") && js.endsWith("]")) "$js.join(',')" else js
+				wv.evaluateJavascript(script) { result ->
+					result?.let { res ->
+						callback?.invoke(res.replace("\"", ""))
+					}
+				}
 			}
 		}
+
+		fun touch(jsLeft: Int, jsTop: Int) {
+			val left = (jsLeft * dpi).toInt()
+			val top = (jsTop * dpi).toInt()
+			wv.touch(left, top)
+		}
+
+		class StatusBar {
+			var enabled = true
+			var blur = true
+			var height = 0
+		}
+
+		class NavigationBar {
+			var enabled = true
+			var blur = true
+			var height = 0
+		}
+
+		val statusBar = StatusBar()
+		val navigationBar = NavigationBar()
 	}
 
 
@@ -328,32 +279,20 @@ class WebApp(
 
 
 	// Protected ------------------------------->
+	val display = activity.windowManager.currentWindowMetrics.bounds
+	val dpiScale = activity.resources.displayMetrics.density
 	lateinit var innerWebView: WebView
 		private set
-	var dpiScale = 1f
+	lateinit var javaScript : JsInterface
+		private set
+	lateinit var bluetooth : BlueTooth
+		private set
+	lateinit var media : WebAppMedia
 		private set
 
-
 	// Instance -------------------------------->
-	class StatusBar {
-		var enabled = true
-		var blur = true
-		var height = "0"
-	}
-
-	class NavigationBar {
-		var enabled = true
-		var blur = true
-		var height = "0"
-	}
-
-	lateinit var javaScript : JsInterface
-	lateinit var bluetooth : BlueTooth
-	lateinit var media : Media
-
-	val statusBar = StatusBar()
-	val navigationBar = NavigationBar()
 	var ovarlayPermissionAllowed = false
+	var addAPI = ""
 	var windowOrientation: Int = ORIENTATION_AUTO
 		set(value) {
 			field = value
@@ -364,14 +303,18 @@ class WebApp(
 			}
 		}
 
-	fun ktTouch(ktLeft: Int, ktTop: Int) {
+	fun touch(ktLeft: Int, ktTop: Int) {
 		innerWebView.touch(ktLeft, ktTop)
 	}
 
-	fun jsTouch(jsLeft: Int, jsTop: Int) {
-		val left = (jsLeft * dpiScale).toInt()
-		val top = (jsTop * dpiScale).toInt()
-		innerWebView.touch(left, top)
+	fun networkGateway(): String {
+		val address = NetworkInterface.getNetworkInterfaces()
+			?.asSequence()
+			?.filter { it.name.contains("lan") }
+			?.flatMap { it.inetAddresses.asSequence() }
+			?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
+
+		return address?.hostAddress.toString()
 	}
 
 
@@ -408,7 +351,8 @@ class WebApp(
 				loadsImagesAutomatically = true
 				blockNetworkImage = false
 				mediaPlaybackRequiresUserGesture = false
-				useWideViewPort = true
+				useWideViewPort = false
+				loadWithOverviewMode = false
 			}
 			webChromeClient = object : WebChromeClient() {
 				override fun getDefaultVideoPoster(): Bitmap {
@@ -424,9 +368,8 @@ class WebApp(
 		}
 
 		// Osztályok:
-		media = Media(activity, innerWebView)
 		bluetooth = BlueTooth(activity)
-		javaScript = JsInterface(innerWebView)
+		javaScript = JsInterface(innerWebView, dpiScale)
 		innerWebView.addJavascriptInterface(javaScript, "android")
 
 		// Bluetooth:
@@ -469,7 +412,8 @@ class WebApp(
 		}
 		// TYPE_MEDIA
 		else {
-			webViewParams = WindowManager.LayoutParams().apply {
+
+			val webViewParams = WindowManager.LayoutParams().apply {
 				type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
 				format = PixelFormat.TRANSLUCENT
 				gravity = (Gravity.TOP or Gravity.START)
@@ -488,18 +432,18 @@ class WebApp(
 
 					fitInsetsTypes = 0
 					layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-					width = activity.windowManager.currentWindowMetrics.bounds.width()
-					height = activity.windowManager.currentWindowMetrics.bounds.height()
+					width = display.width()
+					height = display.height()
 				}
 			}
 
 			// WebView hozzáadás:
 			activity.windowManager.addView(innerWebView, webViewParams)
 
-			media.build()
+			media = WebAppMedia(activity, innerWebView, webViewParams).build()
 		}
 
-		// Folytatás csak ebben a stílusban:
+		// Folytatás csak EDGE_TO_EDGE stílusban:
 		if (windowStyle != STYLE_EDGE_TO_EDGE) return this
 
 
@@ -508,14 +452,15 @@ class WebApp(
 		ViewCompat.setOnApplyWindowInsetsListener(innerWebView) { _, insets ->
 			// Ha van magasság:
 			if (innerWebView.height > 0) {
+
 				val statusHeight = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top.toFloat()
 				val navigHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom.toFloat()
 
-				if (statusBar.height == "0")
-					statusBar.height = "parseInt(window.innerHeight / ${(innerWebView.height / statusHeight)})"
+				if (javaScript.statusBar.height == 0)
+					javaScript.statusBar.height = (statusHeight / dpiScale).toInt()
 
-				if (navigationBar.height == "0" && navigHeight > 0f)
-					navigationBar.height = "parseInt(window.innerHeight / ${(innerWebView.height / navigHeight)})"
+				if (javaScript.navigationBar.height == 0 && navigHeight > 0f)
+					javaScript.navigationBar.height = (navigHeight / dpiScale).toInt()
 
 				/* Ez csak kísérletezéshez kell:*/
 				//bodyFunction = activity.assets.open("barHeights.js").bufferedReader().use { it.readText() }
@@ -597,20 +542,23 @@ class WebApp(
 
 		innerWebView.webViewClient = object : WebViewClient() {
 
-			var loaded = false
+			var loaded = true
 			override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
 				super.onPageStarted(view, url, favicon)
 				if (!loaded) return
 				loaded = false
 				view?.alpha = 0f
 				view?.let { wv ->
-					onStart?.invoke(wv, url)
-					wv.post {
-						wv.evaluateJavascript("window.innerWidth") { width ->
-							val jsWidth = width?.replace("\"", "")?.toFloat() ?: 1f
-							val dpi = activity.windowManager.currentWindowMetrics.bounds.width() / jsWidth
-							dpiScale = ((dpi * 100).roundToInt() / 100f)
-						}
+					// Felső/Alsó sávok beküldése JS-be:
+					val js = bodyFunction
+						.replace(
+							"obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true }",
+							"obj = { topEnabled:${javaScript.statusBar.enabled}, btmEnabled:${javaScript.navigationBar.enabled}, topHeight:${javaScript.statusBar.height}, btmHeight:${javaScript.navigationBar.height}, topBlur:${javaScript.statusBar.blur}, btmBlur:${javaScript.navigationBar.blur} }"
+						)
+						.replace("edgeToEdge = false", "edgeToEdge = ${(windowStyle == STYLE_EDGE_TO_EDGE)}")
+
+					wv.evaluateJavascript(js + addAPI) {
+						onStart?.invoke(wv, url)
 					}
 				}
 			}
@@ -618,19 +566,12 @@ class WebApp(
 			override fun onPageFinished(view: WebView?, url: String?) {
 				if (loaded) return
 				loaded = true
-				view?.animate()?.alpha(1f)?.setDuration(600)?.start()
+				view?.animate()?.alpha(1f)?.setDuration(600)?.startDelay = 0
 				view?.let { wv ->
-					wv.post {
-						if (windowStyle == STYLE_EDGE_TO_EDGE) {
-							edgeToEdgeBarColors()
-							// Felső/Alsó sávok:
-							val js = javaScript.bodyFunction.replace(
-								"obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true }",
-								"obj = { topEnabled:${statusBar.enabled}, btmEnabled:${navigationBar.enabled}, topHeight:${statusBar.height}, btmHeight:${navigationBar.height}, topBlur:${statusBar.blur}, btmBlur:${navigationBar.blur} }"
-							)
-							wv.evaluateJavascript(js, null)
-						}
-						// callback
+					if (windowStyle == STYLE_EDGE_TO_EDGE) {
+						edgeToEdgeBarColors()
+					}
+					wv.evaluateJavascript("") {
 						onLoad?.invoke(wv, url)
 					}
 				}
@@ -688,77 +629,12 @@ class WebApp(
 
 
 
-	private var resumedActivity = false
-	private var screenOn = false
-	/**
-	 Csak TYPE_MEDIA-hoz kell !
-
-	 *	if (windowType == TYPE_NORMAL) return
-	 */
-	fun topResumedActivityChanged(isTopResumedActivity: Boolean) {
-		if (windowType == TYPE_NORMAL) return
-		// onResume:
-		if (isTopResumedActivity) {
-			// Ha nincs engedély onCreate-kor:
-			if (!ovarlayPermissionAllowed) {
-				// Ha visszatéréskor van engedély, újranyitás Destroy és Create:
-				if (Settings.canDrawOverlays(activity)) {
-					MAIN_LOOPER.postDelayed({
-						val intent = activity.packageManager.getLaunchIntentForPackage(activity.packageName)?.apply {
-							addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-						}
-						activity.startActivity(intent)
-						activity.finishAndRemoveTask()
-						Runtime.getRuntime().exit(0)
-					}, 300)
-				}
-				// Ha nincs, akkor csak Destroy:
-				else if (resumedActivity) {
-					MAIN_LOOPER.postDelayed({
-						activity.finishAndRemoveTask()
-					}, 300)
-				}
-				else resumedActivity = true
-				return
-			}
-			// Restore:
-			webViewParams.flags = webViewParams.flags and (
-					WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-					WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-			).inv()
-			activity.windowManager.updateViewLayout(innerWebView, webViewParams)
-			innerWebView.requestFocus()
-			// App megnyitásakor még ne fusson le az onLoad miatt !
-			if (resumedActivity) {
-				// Zárt képernyő utáni visszatéréskor:
-				if (!screenOn) innerWebView.alpha = 1f
-				else innerWebView.animate()?.alpha(1f)?.setDuration(100)?.startDelay = 300
-			}
-			else resumedActivity = true
-			return
-		}
-		// OnPause:
-		if (ovarlayPermissionAllowed) {
-			screenOn = powerManager.isInteractive
-
-			webViewParams.flags = webViewParams.flags or
-					WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-					WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-
-			activity.windowManager.updateViewLayout(innerWebView, webViewParams)
-			innerWebView.animate()?.alpha(0f)?.setDuration(200)?.startDelay = 0
-		}
-	}
-
-
-
 	fun destroy() {
 		if (!ovarlayPermissionAllowed) return
 
 		CookieManager.getInstance().flush()
 
 		activity.unregisterReceiver(bluetoothReceiver)
-
 
 		// Ablakok törlése:
 		if (windowType == TYPE_NORMAL) {
@@ -769,7 +645,6 @@ class WebApp(
 
 			media.destroy()
 		}
-
 
 		// EdgeToEdge:
 		sampleCanvas?.let {
@@ -800,15 +675,19 @@ class WebApp(
 
 
 
-class Media(
+class WebAppMedia(
 	private val act: ComponentActivity,
-	private val wv: WebView
+	private val wv: WebView,
+	private val wvParams: WindowManager.LayoutParams
 ) {
 	private var controllerPlayCallback: (() -> Unit) = {}
 	private var controllerPauseCallback: (() -> Unit) = {}
 	private var controllerBackCallback: (() -> Unit) = {}
 	private var controllerNextCallback: (() -> Unit) = {}
 	private var controllerReadyCallback: (() -> Unit) = {}
+	private val powerManager = act.getSystemService(POWER_SERVICE) as PowerManager
+	private var resumedActivity = false
+	private var screenOn = false
 	private lateinit var future: ListenableFuture<MediaController>
 	// Public !
 	lateinit var controller: MediaController
@@ -825,7 +704,7 @@ class Media(
 		onNext?.let { controllerNextCallback = it }
 	}
 
-	fun build() {
+	fun build(): WebAppMedia {
 		val sessionToken = SessionToken(act, ComponentName(act, WebAppPlaybackService::class.java))
 		future = MediaController.Builder(act, sessionToken).buildAsync()
 		future.addListener({
@@ -879,6 +758,7 @@ class Media(
 			// Készen áll a Vezérlő:
 			wv.post { controllerReadyCallback.invoke() }
 		}, ContextCompat.getMainExecutor(act))
+		return this
 	}
 
 	/**
@@ -896,9 +776,11 @@ class Media(
 
 		if (!::controller.isInitialized) return
 
-		val parsedColor = (	if (background.startsWith("#")) background.toColorInt()
-		else if (isSystemLightMode(act)) -1	// Fehér
-		else 0 )							// Fekete
+		val parsedColor = when {
+			background.startsWith("#") -> background.toColorInt()
+			isSystemLightMode(act) -> Color.WHITE
+			else -> Color.BLACK
+		}
 
 		val bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.RGB_565).apply {
 			eraseColor(parsedColor)
@@ -913,8 +795,8 @@ class Media(
 			setMediaId("noname")
 			setUri("asset:///silent.mp3")
 			setMediaMetadata(MediaMetadata.Builder().run {
-				setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
 				setTitle("...")
+				setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
 				build()
 			})
 			build()
@@ -924,10 +806,10 @@ class Media(
 			setMediaId("main")
 			setUri("asset:///silent.mp3")
 			setMediaMetadata(MediaMetadata.Builder().run {
+				setTitle(title)
 				// teszt "https://i.ytimg.com/vi/e8_Ddw0H0YA/sddefault.jpg"
 				if (background.startsWith("http")) setArtworkUri(background.toUri())
 				else setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
-				setTitle(title)
 				build()
 			})
 			build()
@@ -945,6 +827,39 @@ class Media(
 	}
 
 
+
+	fun topResumedActivityChanged(isTopResumedActivity: Boolean) {
+		if (!Settings.canDrawOverlays(act)) return
+		// onResume:
+		if (isTopResumedActivity) {
+			wvParams.flags = wvParams.flags and (
+					WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+							WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+					).inv()
+			act.windowManager.updateViewLayout(wv, wvParams)
+			wv.requestFocus()
+			// App megnyitásakor még ne fusson le az onLoad miatt !
+			if (resumedActivity) {
+				// Zárt képernyő utáni visszatéréskor:
+				if (!screenOn) wv.alpha = 1f
+				else wv.animate()?.alpha(1f)?.setDuration(100)?.startDelay = 300
+			}
+			else resumedActivity = true
+			return
+		}
+		// OnPause:
+		screenOn = powerManager.isInteractive
+
+		wvParams.flags = wvParams.flags or
+				WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+				WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+
+		act.windowManager.updateViewLayout(wv, wvParams)
+		wv.animate()?.alpha(0f)?.setDuration(200)?.startDelay = 0
+	}
+
+
+
 	fun destroy() {
 		controllerPlayCallback = {}
 		controllerPauseCallback = {}
@@ -958,6 +873,10 @@ class Media(
 		try { MediaController.releaseFuture(future) } catch (e: Throwable) {}
 	}
 }
+
+
+
+
 
 
 
@@ -1006,3 +925,89 @@ class WebAppPlaybackService : MediaSessionService() {
 		super.onDestroy()
 	}
 }
+
+
+
+private var bodyFunction = """
+(function(wnd, doc, edgeToEdge = false) {
+
+	if (wnd.newWebView) return;
+	wnd.newWebView = 1;
+
+	Object.defineProperty(Object.prototype, 'params', {
+		value: function(obj) {
+			if (obj && typeof obj === 'object') {
+				for (const key in obj) {
+					if (Object.prototype.hasOwnProperty.call(obj, key)) {
+						this[key] = obj[key];
+					}
+				}
+			}
+			return this;
+		},
+		writable: true,
+		configurable: true
+	});
+
+	Object.defineProperty(Element.prototype, 'apply', {
+		value: function(block) {
+			if (typeof block === 'function') {
+				block.call(this, this);
+			}
+			return this;
+		},
+		writable: true,
+		configurable: true
+	});
+
+	const
+		obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true },
+		meta = doc.createElement('meta').params({
+			name: 'viewport',
+			content: 'width=device-width, initial-scale=1.0, user-scalable=no'
+		});
+
+	doc.head.appendChild(meta);
+
+	if (edgeToEdge) {
+
+		let cssText = (
+			'body {' +
+				(obj.topEnabled ? ('padding-top: ' + obj.topHeight + 'px;') : '') +
+				(obj.btmEnabled ? ('padding-bottom: ' + obj.btmHeight + 'px;') : '') +
+			'} body::before {' +
+				'position: fixed;' +
+				'content: "";' +
+				'inset: 0;' +
+				'pointer-events: none;' +
+				'backdrop-filter: blur(10px);' +
+				'z-index: 10000;' +
+				'mask-image: linear-gradient(to bottom,');
+
+		if (obj.topEnabled && obj.topBlur) cssText += ('black ' + (obj.topHeight * 0.8) + 'px, transparent ' + obj.topHeight + 'px');
+
+		if (obj.topEnabled && obj.topBlur && obj.btmEnabled && obj.btmBlur) cssText += ',';
+
+		if (obj.btmEnabled && obj.btmBlur) cssText += ('transparent calc(100% - ' + obj.btmHeight + 'px), black calc(100% - ' + (obj.btmHeight * 0.6) + 'px)');
+
+		cssText += ')}';
+
+		if (obj.topEnabled || obj.btmEnabled) {
+			const style = doc.createElement('style').params({
+				textContent: cssText
+			});
+			doc.head.appendChild(style);
+		}
+
+		wnd.addEventListener('touchmove', (e) => {
+			if (e.touches[0].clientY > (wnd.screen.height * 0.93)) e.preventDefault();
+		}, { passive: false });
+
+		wnd.statusBarHeight = obj.topHeight;
+		wnd.navigationBarHeight = obj.btmHeight;
+	}
+
+	if (typeof onAndroid === 'function') onAndroid();
+
+})(window, document);
+""".trimIndent()

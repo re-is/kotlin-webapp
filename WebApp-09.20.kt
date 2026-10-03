@@ -793,14 +793,13 @@ class WebAppMedia(
 				controllerPauseCallback.invoke()
 			}
 			else if (events.contains("BACK")) {
-				controller.seekTo(1,0)
 				controller.pause()
+				controller.seekTo(1,0)
 				controllerBackCallback.invoke()
-
 			}
 			else if (events.contains("NEXT")) {
-				controller.seekTo(1,0)
 				controller.pause()
+				controller.seekTo(1,0)
 				controllerNextCallback.invoke()
 			}
 
@@ -1024,9 +1023,8 @@ class WebAppPlaybackService : MediaSessionService() {
 	}
 
 	private fun updateNotification() {
-		if (ActivityCompat.checkSelfPermission(this@WebAppPlaybackService, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
-			NotificationManagerCompat.from(this@WebAppPlaybackService).notify(1, createNotification())
-		}
+		if (ActivityCompat.checkSelfPermission(this@WebAppPlaybackService, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+		NotificationManagerCompat.from(this@WebAppPlaybackService).notify(1, createNotification())
 	}
 
 
@@ -1204,7 +1202,6 @@ private var defaultAPI = """
     style="?android:attr/buttonBarStyle"
     android:layout_width="match_parent"
     android:layout_height="60dp"
-    android:layout_marginTop="-2dp"
     android:orientation="horizontal"
     android:gravity="center_vertical">
 
@@ -1216,7 +1213,8 @@ private var defaultAPI = """
         android:layout_weight="1"
         android:text="⏮"
         android:textSize="25sp"
-        android:paddingVertical="0dp"
+        android:paddingTop="0dp"
+        android:paddingBottom="5dp"
         tools:ignore="HardcodedText" />
 
     <Button
@@ -1226,8 +1224,9 @@ private var defaultAPI = """
         android:layout_height="wrap_content"
         android:layout_weight="1"
         android:text="▶"
-        android:textSize="25sp"
-        android:paddingVertical="0dp"
+        android:textSize="28sp"
+        android:paddingTop="0dp"
+        android:paddingBottom="5dp"
         tools:ignore="HardcodedText" />
 
     <Button
@@ -1239,7 +1238,6 @@ private var defaultAPI = """
         android:textFontWeight="1000"
         android:text="II"
         android:textSize="25sp"
-        android:paddingVertical="0dp"
         tools:ignore="HardcodedText" />
 
     <Button
@@ -1250,7 +1248,8 @@ private var defaultAPI = """
         android:layout_weight="1"
         android:text="⏭"
         android:textSize="25sp"
-        android:paddingVertical="0dp"
+        android:paddingTop="0dp"
+        android:paddingBottom="5dp"
         tools:ignore="HardcodedText" />
 
 </LinearLayout>

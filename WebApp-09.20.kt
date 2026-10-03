@@ -4,8 +4,7 @@ import android.Manifest
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
 import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
+import android.app.PendingIntent
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
@@ -48,9 +47,9 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
-import androidx.core.graphics.toColorInt
 import androidx.core.graphics.withSave
 import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
@@ -73,7 +72,6 @@ import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
@@ -272,11 +270,23 @@ class WebApp(
 		}
 	}
 
-	private val bluetoothReceiver = object : BroadcastReceiver() {
+	private val receiver = object : BroadcastReceiver() {
 		override fun onReceive(context: Context?, intent: Intent?) {
 			when (intent?.action) {
 				BluetoothDevice.ACTION_ACL_CONNECTED, BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
 					bluetooth.connectedName()
+				}
+				WebAppPlaybackService.ACTION_MEDIA_PLAY -> {
+					media.controller.play()
+				}
+				WebAppPlaybackService.ACTION_MEDIA_PAUSE -> {
+					media.controller.pause()
+				}
+				WebAppPlaybackService.ACTION_MEDIA_BACK -> {
+					media.controller.seekTo(0,0)
+				}
+				WebAppPlaybackService.ACTION_MEDIA_NEXT -> {
+					media.controller.seekTo(2,0)
 				}
 			}
 		}
@@ -427,10 +437,14 @@ class WebApp(
 		}
 
 		// Bluetooth register csak ha van overlay engedély!!
-		activity.registerReceiver(bluetoothReceiver, IntentFilter().apply {
+		ContextCompat.registerReceiver(activity, receiver, IntentFilter().apply {
+			addAction(WebAppPlaybackService.ACTION_MEDIA_PLAY)
+			addAction(WebAppPlaybackService.ACTION_MEDIA_PAUSE)
+			addAction(WebAppPlaybackService.ACTION_MEDIA_BACK)
+			addAction(WebAppPlaybackService.ACTION_MEDIA_NEXT)
 			addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
 			addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
-		})
+		}, ContextCompat.RECEIVER_NOT_EXPORTED)
 
 
 
@@ -446,6 +460,11 @@ class WebApp(
 		}
 		// TYPE_MEDIA
 		else {
+
+			// Értesítés engedély:
+			if (ContextCompat.checkSelfPermission(activity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+				ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 100)
+			}
 
 			webViewParams = WindowManager.LayoutParams().apply {
 				type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -699,14 +718,14 @@ class WebApp(
 
 		CookieManager.getInstance().flush()
 
-		activity.unregisterReceiver(bluetoothReceiver)
+		try { activity.unregisterReceiver(receiver) } catch (_: Exception) {}
 
 		// Ablakok törlése:
 		if (windowType == TYPE_NORMAL) {
-			try { (innerWebView.parent as? ViewGroup)?.removeView(innerWebView) } catch (e: Throwable) {}
+			try { (innerWebView.parent as? ViewGroup)?.removeView(innerWebView) } catch (_: Throwable) {}
 		}
 		else {
-			try { activity.windowManager.removeViewImmediate(innerWebView) } catch (e: Throwable) {}
+			try { activity.windowManager.removeViewImmediate(innerWebView) } catch (_: Throwable) {}
 
 			media.destroy()
 		}
@@ -727,7 +746,7 @@ class WebApp(
 		}
 
 		// WebView törlés:
-		try { innerWebView.destroy() } catch (e: Throwable) {}
+		try { innerWebView.destroy() } catch (_: Throwable) {}
 
 		// Maradék:
 		MAIN_LOOPER.postDelayed({ Runtime.getRuntime().exit(0) }, 300)
@@ -758,11 +777,6 @@ class WebAppMedia(
 	private lateinit var future: ListenableFuture<MediaController>
 	private val listener = object : Player.Listener {
 
-		fun toMain() {
-			MAIN_LOOPER.postDelayed({ controller.seekTo(1, 0) }, 500)
-			controller.pause()
-		}
-
 		fun change(e: String) {
 			events += e
 			MAIN_LOOPER.removeCallbacks(ev)
@@ -779,12 +793,15 @@ class WebAppMedia(
 				controllerPauseCallback.invoke()
 			}
 			else if (events.contains("BACK")) {
+				controller.seekTo(1,0)
+				controller.pause()
 				controllerBackCallback.invoke()
-				toMain()
+
 			}
 			else if (events.contains("NEXT")) {
+				controller.seekTo(1,0)
+				controller.pause()
 				controllerNextCallback.invoke()
-				toMain()
 			}
 
 			events = ""
@@ -835,7 +852,7 @@ class WebAppMedia(
 
 		if (!::controller.isInitialized) return
 
-		val parsedColor = when {
+		/*val parsedColor = when {
 			background.startsWith("#") -> background.toColorInt()
 			isSystemLightMode(act) -> Color.WHITE
 			else -> Color.BLACK
@@ -848,14 +865,14 @@ class WebAppMedia(
 				recycle()
 			}
 			stream.toByteArray()
-		}
+		}*/
 
 		val noNameItem = MediaItem.Builder().run {
 			setMediaId("noname")
 			setUri("asset:///silent.mp3")
 			setMediaMetadata(MediaMetadata.Builder().run {
 				setTitle("...")
-				setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
+				//setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
 				build()
 			})
 			build()
@@ -867,8 +884,8 @@ class WebAppMedia(
 			setMediaMetadata(MediaMetadata.Builder().run {
 				setTitle(title)
 				// teszt "https://i.ytimg.com/vi/e8_Ddw0H0YA/sddefault.jpg"
-				if (background.startsWith("http")) setArtworkUri(background.toUri())
-				else setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
+				//if (background.startsWith("http")) setArtworkUri(background.toUri())
+				//else setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
 				build()
 			})
 			build()
@@ -932,7 +949,7 @@ class WebAppMedia(
 			release()
 		}
 
-		try { MediaController.releaseFuture(future) } catch (e: Throwable) {}
+		try { MediaController.releaseFuture(future) } catch (_: Throwable) {}
 	}
 }
 
@@ -945,6 +962,73 @@ class WebAppMedia(
 class WebAppPlaybackService : MediaSessionService() {
 
 	private lateinit var mediaSession: MediaSession
+	private var playing = false
+
+	private fun createNotification(): Notification {
+		val customLayout = RemoteViews(packageName, R.layout.notification)
+
+		// PLAY:
+		val playPendingIntent = PendingIntent.getBroadcast(this, 100,
+			Intent(ACTION_MEDIA_PLAY).apply { setPackage(packageName) },
+			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+		)
+		customLayout.setOnClickPendingIntent(R.id.media_play, playPendingIntent)
+		customLayout.setViewVisibility(R.id.media_play,
+			if (playing) View.GONE else View.VISIBLE
+		)
+
+		// PAUSE:
+		val pausePendingIntent = PendingIntent.getBroadcast(this, 101,
+			Intent(ACTION_MEDIA_PAUSE).apply { setPackage(packageName) },
+			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+		)
+		customLayout.setOnClickPendingIntent(R.id.media_pause, pausePendingIntent)
+		customLayout.setViewVisibility(R.id.media_pause,
+			if (playing) View.VISIBLE else View.GONE
+		)
+
+		// BACK:
+		val backPendingIntent = PendingIntent.getBroadcast(this, 102,
+			Intent(ACTION_MEDIA_BACK).apply { setPackage(packageName) },
+			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+		)
+		customLayout.setOnClickPendingIntent(R.id.media_back, backPendingIntent)
+
+		// NEXT:
+		val nextPendingIntent = PendingIntent.getBroadcast(this, 103,
+			Intent(ACTION_MEDIA_NEXT).apply { setPackage(packageName) },
+			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+		)
+		customLayout.setOnClickPendingIntent(R.id.media_next, nextPendingIntent)
+
+		// Elhúzáskor:
+		val dismissPendingIntent = PendingIntent.getBroadcast(this, 99,
+			Intent(ACTION_NOTIFICATION_DISMISSED).apply { setPackage(packageName) },
+			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+		)
+
+		return NotificationCompat.Builder(this, packageName).run {
+			setSmallIcon(R.drawable.ic_launcher_monochrome)
+			setCustomContentView(customLayout)
+			setDeleteIntent(dismissPendingIntent)
+			setOngoing(true)
+			setSilent(true)
+			build()
+		}
+	}
+
+	private val notificationDismissReceiver = object : BroadcastReceiver() {
+		override fun onReceive(context: Context?, intent: Intent?) {
+			updateNotification()
+		}
+	}
+
+	private fun updateNotification() {
+		if (ActivityCompat.checkSelfPermission(this@WebAppPlaybackService, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+			NotificationManagerCompat.from(this@WebAppPlaybackService).notify(1, createNotification())
+		}
+	}
+
 
 	@UnstableApi
 	override fun onCreate() {
@@ -965,35 +1049,35 @@ class WebAppPlaybackService : MediaSessionService() {
 			build()
 		}
 
+		player.addListener(object : Player.Listener {
+			override fun onIsPlayingChanged(isPlaying: Boolean) {
+				super.onIsPlayingChanged(isPlaying)
+				playing = isPlaying
+				updateNotification()
+			}
+		})
+
 		mediaSession = MediaSession.Builder(this, player).run {
 			setId("WebAppSession:$packageName")
 			build()
 		}
 
-		val channel = NotificationChannel("CHANNEL_ID", "Kompakt Lejátszó Vezérlő", NotificationManager.IMPORTANCE_LOW)
-		getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+		ContextCompat.registerReceiver(this,
+			notificationDismissReceiver,
+			IntentFilter(ACTION_NOTIFICATION_DISMISSED),
+			ContextCompat.RECEIVER_NOT_EXPORTED
+		)
+
+		startForeground(1, createNotification())
 	}
 
-	override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
-		startForeground(1, createSmallNotification())
-	}
-
-	private fun createSmallNotification(): Notification {
-		val customLayout = RemoteViews(packageName, R.layout.notification_small)
-
-		return NotificationCompat.Builder(this, "CHANNEL_ID").run {
-			setSmallIcon(R.drawable.ic_launcher_foreground)
-			setStyle(NotificationCompat.DecoratedCustomViewStyle())
-			setCustomContentView(customLayout)
-			setOngoing(true)
-			setSilent(true)
-			build()
-		}
-	}
+	override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {}
 
 	override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
 
 	override fun onDestroy() {
+
+		try { unregisterReceiver(notificationDismissReceiver) } catch (_: Exception) {}
 
 		mediaSession.run {
 			player.stop()
@@ -1002,11 +1086,24 @@ class WebAppPlaybackService : MediaSessionService() {
 			release()
 		}
 
+		try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
+
 		"MediaService, onDestroy".log()
 
 		super.onDestroy()
 	}
+
+	companion object {
+		const val ACTION_NOTIFICATION_DISMISSED = "ACTION_0"
+		const val ACTION_MEDIA_PAUSE = "ACTION_1"
+		const val ACTION_MEDIA_PLAY = "ACTION_2"
+		const val ACTION_MEDIA_BACK = "ACTION_3"
+		const val ACTION_MEDIA_NEXT = "ACTION_4"
+	}
 }
+
+
+
 
 
 
@@ -1093,3 +1190,69 @@ private var defaultAPI = """
 
 })(window, document);
 """.trimIndent()
+
+
+
+
+/*
+
+	notification.xml layout:
+
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    style="?android:attr/buttonBarStyle"
+    android:layout_width="match_parent"
+    android:layout_height="60dp"
+    android:layout_marginTop="-2dp"
+    android:orientation="horizontal"
+    android:gravity="center_vertical">
+
+    <Button
+        android:id="@+id/media_back"
+        style="?android:attr/buttonBarButtonStyle"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:text="⏮"
+        android:textSize="25sp"
+        android:paddingVertical="0dp"
+        tools:ignore="HardcodedText" />
+
+    <Button
+        android:id="@+id/media_play"
+        style="?android:attr/buttonBarButtonStyle"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:text="▶"
+        android:textSize="25sp"
+        android:paddingVertical="0dp"
+        tools:ignore="HardcodedText" />
+
+    <Button
+        android:id="@+id/media_pause"
+        style="?android:attr/buttonBarButtonStyle"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:textFontWeight="1000"
+        android:text="II"
+        android:textSize="25sp"
+        android:paddingVertical="0dp"
+        tools:ignore="HardcodedText" />
+
+    <Button
+        android:id="@+id/media_next"
+        style="?android:attr/buttonBarButtonStyle"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:text="⏭"
+        android:textSize="25sp"
+        android:paddingVertical="0dp"
+        tools:ignore="HardcodedText" />
+
+</LinearLayout>
+
+*/

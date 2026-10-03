@@ -3,6 +3,9 @@
 import android.Manifest
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
@@ -29,7 +32,6 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.view.Window
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
@@ -39,11 +41,13 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.RemoteViews
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.toColorInt
@@ -99,18 +103,6 @@ fun isSystemLightMode(context: Context): Boolean {
 }
 
 
-fun Window.fullScreen(mode: Boolean) {
-	val controller = WindowInsetsControllerCompat(this, this.decorView)
-	if (mode) {
-		controller.hide(WindowInsetsCompat.Type.systemBars())
-		controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-	} else {
-		controller.show(WindowInsetsCompat.Type.systemBars())
-		controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
-	}
-}
-
-
 fun webResourceRequestBlock(): WebResourceResponse = WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
 
 
@@ -137,17 +129,23 @@ build.gradle.kts, TYPE_MEDIA
 Manifest
 
  *	<uses-permission android:name="android.permission.INTERNET" />
- *	<!-- TYPE_MEDIA -->
+ *	<uses-permission android:name="android.permission.BLUETOOTH" />
+ *	<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+ *	// TYPE_MEDIA
  *	<uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
  *	<uses-permission android:name="android.permission.WAKE_LOCK" />
  *	<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
  *	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
- *	<uses-permission android:name="android.permission.BLUETOOTH" />
- *	<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-
-Service, TYPE_MEDIA
+ *	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
  *	<application>
+ *		<activity
+ *			// Nem reagál ezekre:
+ *			android:configChanges="orientation|screenSize|keyboardHidden"
+ *			android:windowSoftInputMode="adjustNothing"
+ *		</activity>
+
+ *		// TYPE_MEDIA
  *		<service
  *			android:name=".WebAppPlaybackService"
  *			android:exported="false"
@@ -174,22 +172,39 @@ class WebApp(
 ) {
 
 	class JsInterface(private val wv: WebView, private val dpi: Float) {
-		private var receiverCallback: ((id: String, params: List<String>) -> Unit) = { _,_ -> }
+		private var commandCallback: ((id: String, params: List<String>) -> Unit) = { _,_ -> }
 
+		/**
+		 *	// Az onStart után, az onLoad előtt adja hozzá !
+		 */
+		var addAPI = ""
+
+		/**
+		 *	//JavaScript:
+		 *	window.android.command('my', '433, true');
+		 */
 		fun onCommand(callback: ((id: String, params: List<String>) -> Unit)) {
-			receiverCallback = callback
+			commandCallback = callback
 		}
 
 		@JavascriptInterface
-		fun command(id: String, param: String) {
+		fun command(id: String, value: String) {
 			MAIN_LOOPER.post {
-				val params = param.split(",")
+				val params = value.split(",")
 					.map { it.trim() }
 					.filter { it.isNotEmpty() }
-				receiverCallback.invoke(id, params)
+				commandCallback.invoke(id, params)
 			}
 		}
 
+		/**
+		 *	// Array is küldhető:
+		 *	javaScript.send("[screen.width, screen.height]") {
+		 *		val arr = it.split(",")
+		 *		arr[0].log()
+		 *		arr[1].log()
+		 *	}
+		 */
 		fun send(js: String, callback: ((String) -> Unit)? = null) {
 			wv.post {
 				val script = if (js.startsWith("[") && js.endsWith("]")) "$js.join(',')" else js
@@ -201,6 +216,9 @@ class WebApp(
 			}
 		}
 
+		/**
+		 *	// Érintés a JavaScript pixelein
+		 */
 		fun touch(jsLeft: Int, jsTop: Int) {
 			val left = (jsLeft * dpi).toInt()
 			val top = (jsTop * dpi).toInt()
@@ -273,14 +291,15 @@ class WebApp(
 		const val STYLE_EDGE_TO_EDGE = 1
 		const val STYLE_FULL_SCREEN = 2
 		const val ORIENTATION_AUTO = 0
-		const val ORIENTATION_FIXED_PORTRAIT = 1
-		const val ORIENTATION_FIXED_LANDSCAPE = 2
+		const val ORIENTATION_PORTRAIT = 1
+		const val ORIENTATION_LANDSCAPE = 2
 	}
 
 
 	// Protected ------------------------------->
-	val display = activity.windowManager.currentWindowMetrics.bounds
+	var display = activity.windowManager.currentWindowMetrics.bounds
 	val dpiScale = activity.resources.displayMetrics.density
+	private lateinit var webViewParams: WindowManager.LayoutParams
 	lateinit var innerWebView: WebView
 		private set
 	lateinit var javaScript : JsInterface
@@ -292,17 +311,19 @@ class WebApp(
 
 	// Instance -------------------------------->
 	var ovarlayPermissionAllowed = false
-	var addAPI = ""
 	var windowOrientation: Int = ORIENTATION_AUTO
 		set(value) {
 			field = value
 			activity.requestedOrientation = when (value) {
-				ORIENTATION_FIXED_PORTRAIT -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-				ORIENTATION_FIXED_LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+				ORIENTATION_PORTRAIT -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+				ORIENTATION_LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
 				else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
 			}
 		}
 
+	/**
+	 *	// Érintés a kijelző pixelein
+	 */
 	fun touch(ktLeft: Int, ktTop: Int) {
 		innerWebView.touch(ktLeft, ktTop)
 	}
@@ -317,6 +338,17 @@ class WebApp(
 		return address?.hostAddress.toString()
 	}
 
+	fun fullScreen(mode: Boolean) {
+		val controller = WindowInsetsControllerCompat(activity.window, activity.window.decorView)
+		if (mode) {
+			controller.hide(WindowInsetsCompat.Type.systemBars())
+			controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+		} else {
+			controller.show(WindowInsetsCompat.Type.systemBars())
+			controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+		}
+	}
+
 
 
 	@SuppressLint(
@@ -325,14 +357,14 @@ class WebApp(
 		"SourceLockedOrientationActivity",
 		"ClickableViewAccessibility"
 	)
-	fun build(): WebApp {
+	fun create(): WebApp {
 
 		// Törli a Destroy exit-et !
 		MAIN_LOOPER.removeCallbacksAndMessages(null)
 
 		// Nagyméretű ablaknál:
 		if (windowStyle > STYLE_NORMAL) {
-			if (windowStyle == STYLE_FULL_SCREEN) activity.window.fullScreen(true)
+			if (windowStyle == STYLE_FULL_SCREEN) fullScreen(true)
 			else {
 				val s = SystemBarStyle.dark(Color.TRANSPARENT)
 				activity.enableEdgeToEdge(statusBarStyle = s, navigationBarStyle = s)
@@ -340,7 +372,7 @@ class WebApp(
 		}
 
 		// WebView beállítása:
-		innerWebView = WebView(activity).apply {
+		innerWebView = WebView(if (windowType == TYPE_NORMAL) activity else activity.applicationContext).apply {
 			keepScreenOn = true
 			scrollBarSize = 0
 			alpha = 0f
@@ -400,6 +432,8 @@ class WebApp(
 			addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
 		})
 
+
+
 		// TYPE_NORMAL
 		if (windowType == TYPE_NORMAL) {
 			val param = ViewGroup.LayoutParams(
@@ -413,7 +447,7 @@ class WebApp(
 		// TYPE_MEDIA
 		else {
 
-			val webViewParams = WindowManager.LayoutParams().apply {
+			webViewParams = WindowManager.LayoutParams().apply {
 				type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
 				format = PixelFormat.TRANSLUCENT
 				gravity = (Gravity.TOP or Gravity.START)
@@ -440,32 +474,69 @@ class WebApp(
 			// WebView hozzáadás:
 			activity.windowManager.addView(innerWebView, webViewParams)
 
-			media = WebAppMedia(activity, innerWebView, webViewParams).build()
+			media = WebAppMedia(activity, innerWebView, webViewParams).create()
 		}
 
-		// Folytatás csak EDGE_TO_EDGE stílusban:
-		if (windowStyle != STYLE_EDGE_TO_EDGE) return this
 
-
-
+		var started = false
 		// Rendszersávok méretei:
 		ViewCompat.setOnApplyWindowInsetsListener(innerWebView) { _, insets ->
 			// Ha van magasság:
 			if (innerWebView.height > 0) {
 
-				val statusHeight = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top.toFloat()
-				val navigHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom.toFloat()
+				if (!started) {
 
-				if (javaScript.statusBar.height == 0)
-					javaScript.statusBar.height = (statusHeight / dpiScale).toInt()
+					if (windowStyle == STYLE_EDGE_TO_EDGE) {
+						val statusHeight =
+							insets.getInsets(WindowInsetsCompat.Type.statusBars()).top.toFloat()
+						val navigHeight =
+							insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom.toFloat()
 
-				if (javaScript.navigationBar.height == 0 && navigHeight > 0f)
-					javaScript.navigationBar.height = (navigHeight / dpiScale).toInt()
+						if (javaScript.statusBar.height == 0)
+							javaScript.statusBar.height = (statusHeight / dpiScale).toInt()
 
-				/* Ez csak kísérletezéshez kell:*/
-				//bodyFunction = activity.assets.open("barHeights.js").bufferedReader().use { it.readText() }
+						if (javaScript.navigationBar.height == 0 && navigHeight > 0f)
+							javaScript.navigationBar.height = (navigHeight / dpiScale).toInt()
+					}
+					else {
+						javaScript.statusBar.apply {
+							enabled = false
+							height = 0
+							blur = false
+						}
+						javaScript.navigationBar.apply {
+							enabled = false
+							height = 0
+							blur = false
+						}
+					}
 
-				ViewCompat.setOnApplyWindowInsetsListener(innerWebView, null)
+					/* Ez csak kísérletezéshez kell:*/
+					//bodyFunction = activity.assets.open("barHeights.js").bufferedReader().use { it.readText() }
+
+					defaultAPI = defaultAPI
+						.replace(
+							"obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true }",
+							"obj = { topEnabled:${javaScript.statusBar.enabled}, btmEnabled:${javaScript.navigationBar.enabled}, topHeight:${javaScript.statusBar.height}, btmHeight:${javaScript.navigationBar.height}, topBlur:${javaScript.statusBar.blur}, btmBlur:${javaScript.navigationBar.blur} }"
+						)
+						.replace(
+							"edgeToEdge = false",
+							"edgeToEdge = ${(windowStyle == STYLE_EDGE_TO_EDGE)}"
+						)
+
+					started = true
+				}
+				// Elforgatáskor:
+				else if (windowType == TYPE_MEDIA && windowStyle > STYLE_NORMAL) {
+					display = activity.windowManager.currentWindowMetrics.bounds
+					if (webViewParams.width != display.width()) {
+						webViewParams.apply {
+							width = display.width()
+							height = display.height()
+						}
+						activity.windowManager.updateViewLayout(innerWebView, webViewParams)
+					}
+				}
 			}
 
 			insets
@@ -509,7 +580,9 @@ class WebApp(
 	}
 
 
-
+	/**
+	 *	// Láncolható !
+	 */
 	fun events(
 		onStart: ((WebView, String?) -> Unit)? = null,
 		onLoad: ((WebView, String?) -> Unit)? = null,
@@ -549,15 +622,7 @@ class WebApp(
 				loaded = false
 				view?.alpha = 0f
 				view?.let { wv ->
-					// Felső/Alsó sávok beküldése JS-be:
-					val js = bodyFunction
-						.replace(
-							"obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true }",
-							"obj = { topEnabled:${javaScript.statusBar.enabled}, btmEnabled:${javaScript.navigationBar.enabled}, topHeight:${javaScript.statusBar.height}, btmHeight:${javaScript.navigationBar.height}, topBlur:${javaScript.statusBar.blur}, btmBlur:${javaScript.navigationBar.blur} }"
-						)
-						.replace("edgeToEdge = false", "edgeToEdge = ${(windowStyle == STYLE_EDGE_TO_EDGE)}")
-
-					wv.evaluateJavascript(js + addAPI) {
+					wv.post {
 						onStart?.invoke(wv, url)
 					}
 				}
@@ -571,8 +636,10 @@ class WebApp(
 					if (windowStyle == STYLE_EDGE_TO_EDGE) {
 						edgeToEdgeBarColors()
 					}
-					wv.evaluateJavascript("") {
-						onLoad?.invoke(wv, url)
+					wv.post {
+						wv.evaluateJavascript(defaultAPI + javaScript.addAPI) {
+							onLoad?.invoke(wv, url)
+						}
 					}
 				}
 			}
@@ -601,14 +668,13 @@ class WebApp(
 
 
 	/**
-	 Tartalom lehet:
-
+	 *	// A tartalom lehet:
 	 *	""
 	 *	"http..."
 	 *	"index.html"
 	 *	"<html></html>"
 	 */
-	fun loadContent(content: String): WebApp {
+	fun loadContent(content: String) {
 		val input = content.trim()
 		when {
 			input.isEmpty() -> {
@@ -624,7 +690,6 @@ class WebApp(
 				innerWebView.loadDataWithBaseURL("file:///android_asset/", input, "text/html", "UTF-8", null)
 			}
 		}
-		return this
 	}
 
 
@@ -680,17 +745,63 @@ class WebAppMedia(
 	private val wv: WebView,
 	private val wvParams: WindowManager.LayoutParams
 ) {
+	lateinit var controller: MediaController
+	var onReady: (() -> Unit) = {}
+
 	private var controllerPlayCallback: (() -> Unit) = {}
 	private var controllerPauseCallback: (() -> Unit) = {}
 	private var controllerBackCallback: (() -> Unit) = {}
 	private var controllerNextCallback: (() -> Unit) = {}
-	private var controllerReadyCallback: (() -> Unit) = {}
 	private val powerManager = act.getSystemService(POWER_SERVICE) as PowerManager
 	private var resumedActivity = false
 	private var screenOn = false
 	private lateinit var future: ListenableFuture<MediaController>
-	// Public !
-	lateinit var controller: MediaController
+	private val listener = object : Player.Listener {
+
+		fun toMain() {
+			MAIN_LOOPER.postDelayed({ controller.seekTo(1, 0) }, 500)
+			controller.pause()
+		}
+
+		fun change(e: String) {
+			events += e
+			MAIN_LOOPER.removeCallbacks(ev)
+			MAIN_LOOPER.postDelayed(ev, 200)
+		}
+
+		var events = ""
+		val ev = Runnable {
+
+			if (events == "PLAY") {
+				controllerPlayCallback.invoke()
+			}
+			else if (events == "PAUSE") {
+				controllerPauseCallback.invoke()
+			}
+			else if (events.contains("BACK")) {
+				controllerBackCallback.invoke()
+				toMain()
+			}
+			else if (events.contains("NEXT")) {
+				controllerNextCallback.invoke()
+				toMain()
+			}
+
+			events = ""
+		}
+
+		override fun onIsPlayingChanged(isPlaying: Boolean) {
+			change(if (isPlaying) "PLAY" else "PAUSE")
+		}
+
+		override fun onTracksChanged(tracks: Tracks) {
+			if (tracks.groups.isEmpty()) return
+			when (controller.currentMediaItemIndex) {
+				0 -> change("BACK")
+				2 -> change("NEXT")
+			}
+		}
+	}
 
 	fun events(
 		onPlay: (() -> Unit) ?= null,
@@ -704,73 +815,21 @@ class WebAppMedia(
 		onNext?.let { controllerNextCallback = it }
 	}
 
-	fun build(): WebAppMedia {
-		val sessionToken = SessionToken(act, ComponentName(act, WebAppPlaybackService::class.java))
+	fun create(): WebAppMedia {
+		val sessionToken = SessionToken(act.applicationContext, ComponentName(act.applicationContext, WebAppPlaybackService::class.java))
 		future = MediaController.Builder(act, sessionToken).buildAsync()
 		future.addListener({
 			controller = future.get()
-			controller.addListener(object : Player.Listener {
-
-				fun toMain() {
-					controller.seekTo(1, 0)
-					controller.pause()
-				}
-
-				fun change(e: String) {
-					events += e
-					MAIN_LOOPER.removeCallbacks(ev)
-					MAIN_LOOPER.postDelayed(ev, 200)
-				}
-
-				var events = ""
-				val ev = Runnable {
-
-					if (events == "PLAY") {
-						controllerPlayCallback.invoke()
-					}
-					else if (events == "PAUSE") {
-						controllerPauseCallback.invoke()
-					}
-					else if (events.contains("BACK")) {
-						controllerBackCallback.invoke()
-						toMain()
-					}
-					else if (events.contains("NEXT")) {
-						controllerNextCallback.invoke()
-						toMain()
-					}
-
-					events = ""
-				}
-
-				override fun onIsPlayingChanged(isPlaying: Boolean) {
-					change(if (isPlaying) "PLAY" else "PAUSE")
-				}
-
-				override fun onTracksChanged(tracks: Tracks) {
-					if (tracks.groups.isEmpty()) return
-					when (controller.currentMediaItemIndex) {
-						0 -> change("BACK")
-						2 -> change("NEXT")
-					}
-				}
-			})
+			controller.addListener(listener)
 			// Készen áll a Vezérlő:
-			wv.post { controllerReadyCallback.invoke() }
+			wv.post { onReady.invoke() }
 		}, ContextCompat.getMainExecutor(act))
 		return this
 	}
 
 	/**
-	 *	Wait to build Controller
-	 */
-	fun waitForController(callback: () -> Unit) {
-		controllerReadyCallback = callback
-	}
-
-	/**
-	 *	title: Zene címe
-	 *	background: hexColor, imageURL, default
+	 *	// title: Zene címe
+	 *	// background: hexColor, imageURL, default
 	 */
 	fun setup(title: String, background: String = "") {
 
@@ -782,14 +841,14 @@ class WebAppMedia(
 			else -> Color.BLACK
 		}
 
-		val bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.RGB_565).apply {
-			eraseColor(parsedColor)
+		val artworkBytes = ByteArrayOutputStream().use { stream ->
+			Bitmap.createBitmap(10, 10, Bitmap.Config.RGB_565).apply {
+				eraseColor(parsedColor)
+				compress(Bitmap.CompressFormat.JPEG, 80, stream)
+				recycle()
+			}
+			stream.toByteArray()
 		}
-
-		val stream = ByteArrayOutputStream()
-		bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-		val artworkBytes = stream.toByteArray()
-
 
 		val noNameItem = MediaItem.Builder().run {
 			setMediaId("noname")
@@ -834,8 +893,8 @@ class WebAppMedia(
 		if (isTopResumedActivity) {
 			wvParams.flags = wvParams.flags and (
 					WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-							WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-					).inv()
+					WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+			).inv()
 			act.windowManager.updateViewLayout(wv, wvParams)
 			wv.requestFocus()
 			// App megnyitásakor még ne fusson le az onLoad miatt !
@@ -865,10 +924,13 @@ class WebAppMedia(
 		controllerPauseCallback = {}
 		controllerBackCallback = {}
 		controllerNextCallback = {}
-		controllerReadyCallback = {}
+		onReady = {}
 
-		controller.stop()
-		controller.release()
+		controller.apply {
+			removeListener(listener)
+			stop()
+			release()
+		}
 
 		try { MediaController.releaseFuture(future) } catch (e: Throwable) {}
 	}
@@ -907,6 +969,26 @@ class WebAppPlaybackService : MediaSessionService() {
 			setId("WebAppSession:$packageName")
 			build()
 		}
+
+		val channel = NotificationChannel("CHANNEL_ID", "Kompakt Lejátszó Vezérlő", NotificationManager.IMPORTANCE_LOW)
+		getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+	}
+
+	override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+		startForeground(1, createSmallNotification())
+	}
+
+	private fun createSmallNotification(): Notification {
+		val customLayout = RemoteViews(packageName, R.layout.notification_small)
+
+		return NotificationCompat.Builder(this, "CHANNEL_ID").run {
+			setSmallIcon(R.drawable.ic_launcher_foreground)
+			setStyle(NotificationCompat.DecoratedCustomViewStyle())
+			setCustomContentView(customLayout)
+			setOngoing(true)
+			setSilent(true)
+			build()
+		}
 	}
 
 	override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
@@ -928,7 +1010,7 @@ class WebAppPlaybackService : MediaSessionService() {
 
 
 
-private var bodyFunction = """
+private var defaultAPI = """
 (function(wnd, doc, edgeToEdge = false) {
 
 	if (wnd.newWebView) return;

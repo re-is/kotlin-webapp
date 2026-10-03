@@ -282,7 +282,7 @@ class WebApp(
 				WebAppPlaybackService.ACTION_MEDIA_PAUSE -> {
 					media.controller.pause()
 				}
-				WebAppPlaybackService.ACTION_MEDIA_BACK -> {
+				WebAppPlaybackService.ACTION_MEDIA_PREV -> {
 					media.controller.seekTo(0,0)
 				}
 				WebAppPlaybackService.ACTION_MEDIA_NEXT -> {
@@ -440,7 +440,7 @@ class WebApp(
 		ContextCompat.registerReceiver(activity, receiver, IntentFilter().apply {
 			addAction(WebAppPlaybackService.ACTION_MEDIA_PLAY)
 			addAction(WebAppPlaybackService.ACTION_MEDIA_PAUSE)
-			addAction(WebAppPlaybackService.ACTION_MEDIA_BACK)
+			addAction(WebAppPlaybackService.ACTION_MEDIA_PREV)
 			addAction(WebAppPlaybackService.ACTION_MEDIA_NEXT)
 			addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
 			addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
@@ -769,7 +769,7 @@ class WebAppMedia(
 
 	private var controllerPlayCallback: (() -> Unit) = {}
 	private var controllerPauseCallback: (() -> Unit) = {}
-	private var controllerBackCallback: (() -> Unit) = {}
+	private var controllerPrevCallback: (() -> Unit) = {}
 	private var controllerNextCallback: (() -> Unit) = {}
 	private val powerManager = act.getSystemService(POWER_SERVICE) as PowerManager
 	private var resumedActivity = false
@@ -792,10 +792,10 @@ class WebAppMedia(
 			else if (events == "PAUSE") {
 				controllerPauseCallback.invoke()
 			}
-			else if (events.contains("BACK")) {
+			else if (events.contains("PREV")) {
 				controller.pause()
 				controller.seekTo(1,0)
-				controllerBackCallback.invoke()
+				controllerPrevCallback.invoke()
 			}
 			else if (events.contains("NEXT")) {
 				controller.pause()
@@ -813,7 +813,7 @@ class WebAppMedia(
 		override fun onTracksChanged(tracks: Tracks) {
 			if (tracks.groups.isEmpty()) return
 			when (controller.currentMediaItemIndex) {
-				0 -> change("BACK")
+				0 -> change("PREV")
 				2 -> change("NEXT")
 			}
 		}
@@ -822,12 +822,12 @@ class WebAppMedia(
 	fun events(
 		onPlay: (() -> Unit) ?= null,
 		onPause: (() -> Unit) ?= null,
-		onBack: (() -> Unit) ?= null,
+		onPrev: (() -> Unit) ?= null,
 		onNext: (() -> Unit) ?= null
 	) {
 		onPlay?.let { controllerPlayCallback = it }
 		onPause?.let { controllerPauseCallback = it }
-		onBack?.let { controllerBackCallback = it }
+		onPrev?.let { controllerPrevCallback = it }
 		onNext?.let { controllerNextCallback = it }
 	}
 
@@ -938,7 +938,7 @@ class WebAppMedia(
 	fun destroy() {
 		controllerPlayCallback = {}
 		controllerPauseCallback = {}
-		controllerBackCallback = {}
+		controllerPrevCallback = {}
 		controllerNextCallback = {}
 		onReady = {}
 
@@ -986,12 +986,12 @@ class WebAppPlaybackService : MediaSessionService() {
 			if (playing) View.VISIBLE else View.GONE
 		)
 
-		// BACK:
-		val backPendingIntent = PendingIntent.getBroadcast(this, 102,
-			Intent(ACTION_MEDIA_BACK).apply { setPackage(packageName) },
+		// PREV:
+		val prevPendingIntent = PendingIntent.getBroadcast(this, 102,
+			Intent(ACTION_MEDIA_PREV).apply { setPackage(packageName) },
 			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 		)
-		customLayout.setOnClickPendingIntent(R.id.media_back, backPendingIntent)
+		customLayout.setOnClickPendingIntent(R.id.media_prev, prevPendingIntent)
 
 		// NEXT:
 		val nextPendingIntent = PendingIntent.getBroadcast(this, 103,
@@ -1026,7 +1026,6 @@ class WebAppPlaybackService : MediaSessionService() {
 		if (ActivityCompat.checkSelfPermission(this@WebAppPlaybackService, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
 		NotificationManagerCompat.from(this@WebAppPlaybackService).notify(1, createNotification())
 	}
-
 
 	@UnstableApi
 	override fun onCreate() {
@@ -1095,7 +1094,7 @@ class WebAppPlaybackService : MediaSessionService() {
 		const val ACTION_NOTIFICATION_DISMISSED = "ACTION_0"
 		const val ACTION_MEDIA_PAUSE = "ACTION_1"
 		const val ACTION_MEDIA_PLAY = "ACTION_2"
-		const val ACTION_MEDIA_BACK = "ACTION_3"
+		const val ACTION_MEDIA_PREV = "ACTION_3"
 		const val ACTION_MEDIA_NEXT = "ACTION_4"
 	}
 }
@@ -1206,7 +1205,7 @@ private var defaultAPI = """
     android:gravity="center_vertical">
 
     <Button
-        android:id="@+id/media_back"
+        android:id="@+id/media_prev"
         style="?android:attr/buttonBarButtonStyle"
         android:layout_width="0dp"
         android:layout_height="wrap_content"

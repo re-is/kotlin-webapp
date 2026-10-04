@@ -4,6 +4,8 @@ import android.Manifest
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
 import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
@@ -20,6 +22,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -47,7 +50,6 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.withSave
@@ -66,10 +68,13 @@ import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaController
+import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionToken
+import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.ByteArrayInputStream
 import java.net.Inet4Address
@@ -277,16 +282,16 @@ class WebApp(
 					bluetooth.connectedName()
 				}
 				WebAppPlaybackService.ACTION_MEDIA_PLAY -> {
-					media.controller.play()
+					media.play()
 				}
 				WebAppPlaybackService.ACTION_MEDIA_PAUSE -> {
-					media.controller.pause()
+					media.pause()
 				}
 				WebAppPlaybackService.ACTION_MEDIA_PREV -> {
-					media.controller.seekTo(0,0)
+					media.prev()
 				}
 				WebAppPlaybackService.ACTION_MEDIA_NEXT -> {
-					media.controller.seekTo(2,0)
+					media.next()
 				}
 			}
 		}
@@ -767,14 +772,16 @@ class WebAppMedia(
 	lateinit var controller: MediaController
 	var onReady: (() -> Unit) = {}
 
+	private lateinit var future: ListenableFuture<MediaController>
 	private var controllerPlayCallback: (() -> Unit) = {}
 	private var controllerPauseCallback: (() -> Unit) = {}
 	private var controllerPrevCallback: (() -> Unit) = {}
 	private var controllerNextCallback: (() -> Unit) = {}
+	private var controllerChangedCallback: (() -> Unit) = {}
 	private val powerManager = act.getSystemService(POWER_SERVICE) as PowerManager
 	private var resumedActivity = false
 	private var screenOn = false
-	private lateinit var future: ListenableFuture<MediaController>
+	private var changed = false
 	private val listener = object : Player.Listener {
 
 		fun change(e: String) {
@@ -788,18 +795,17 @@ class WebAppMedia(
 
 			if (events == "PLAY") {
 				controllerPlayCallback.invoke()
+				changed = false
 			}
 			else if (events == "PAUSE") {
 				controllerPauseCallback.invoke()
 			}
 			else if (events.contains("PREV")) {
-				controller.pause()
-				controller.seekTo(1,0)
+				controller.seekTo(1, 0)
 				controllerPrevCallback.invoke()
 			}
 			else if (events.contains("NEXT")) {
-				controller.pause()
-				controller.seekTo(1,0)
+				controller.seekTo(1, 0)
 				controllerNextCallback.invoke()
 			}
 
@@ -811,10 +817,19 @@ class WebAppMedia(
 		}
 
 		override fun onTracksChanged(tracks: Tracks) {
-			if (tracks.groups.isEmpty()) return
+			if (changed || tracks.groups.isEmpty()) return
+			changed = true
 			when (controller.currentMediaItemIndex) {
-				0 -> change("PREV")
-				2 -> change("NEXT")
+				0 -> {
+					controller.pause()	// Szépen megálljon, ne villogjon a PLAY gomb
+					controllerChangedCallback.invoke()
+					change("PREV")
+				}
+				2 -> {
+					controller.pause()
+					controllerChangedCallback.invoke()
+					change("NEXT")
+				}
 			}
 		}
 	}
@@ -823,12 +838,14 @@ class WebAppMedia(
 		onPlay: (() -> Unit) ?= null,
 		onPause: (() -> Unit) ?= null,
 		onPrev: (() -> Unit) ?= null,
-		onNext: (() -> Unit) ?= null
+		onNext: (() -> Unit) ?= null,
+		onChanged: (() -> Unit) ?= null
 	) {
 		onPlay?.let { controllerPlayCallback = it }
 		onPause?.let { controllerPauseCallback = it }
 		onPrev?.let { controllerPrevCallback = it }
 		onNext?.let { controllerNextCallback = it }
+		onChanged?.let { controllerChangedCallback = it }
 	}
 
 	fun create(): WebAppMedia {
@@ -837,7 +854,6 @@ class WebAppMedia(
 		future.addListener({
 			controller = future.get()
 			controller.addListener(listener)
-			// Készen áll a Vezérlő:
 			wv.post { onReady.invoke() }
 		}, ContextCompat.getMainExecutor(act))
 		return this
@@ -847,7 +863,7 @@ class WebAppMedia(
 	 *	// title: Zene címe
 	 *	// background: hexColor, imageURL, default
 	 */
-	fun setup(title: String, background: String = "") {
+	fun start(title: String, background: String = "") {
 
 		if (!::controller.isInitialized) return
 
@@ -902,6 +918,32 @@ class WebAppMedia(
 	}
 
 
+	fun play() {
+		controller.play()	// frissülni fog az értesítés és lefut a callback !
+	}
+
+	fun pause() {
+		controller.pause()	// frissülni fog az értesítés és lefut a callback !
+	}
+
+	fun prev() {
+		if (changed) return
+		controller.pause()
+		controller.seekTo(0,0)
+	}
+
+	fun next() {
+		if (changed) return
+		controller.pause()
+		controller.seekTo(2,0)
+	}
+
+	fun stop() {
+		controller.pause()
+		controller.clearMediaItems()
+		controller.stop()
+	}
+
 
 	fun topResumedActivityChanged(isTopResumedActivity: Boolean) {
 		if (!Settings.canDrawOverlays(act)) return
@@ -940,10 +982,13 @@ class WebAppMedia(
 		controllerPauseCallback = {}
 		controllerPrevCallback = {}
 		controllerNextCallback = {}
+		controllerChangedCallback = {}
 		onReady = {}
 
 		controller.apply {
 			removeListener(listener)
+			pause()
+			clearMediaItems()
 			stop()
 			release()
 		}
@@ -961,9 +1006,19 @@ class WebAppMedia(
 class WebAppPlaybackService : MediaSessionService() {
 
 	private lateinit var mediaSession: MediaSession
+	private var updateNotificationAction: (() -> Unit) = {}
+	private var cachedNotification: MediaNotification? = null
+	private var cachedStateKey: String? = null
 	private var playing = false
 
-	private fun createNotification(): Notification {
+	private fun getMediaStateKey(): String {
+		val currentItem = mediaSession.player.currentMediaItem
+		val title = currentItem?.mediaMetadata?.title ?: ""
+		val artist = currentItem?.mediaMetadata?.artist ?: ""
+		return "$playing|$title|$artist|${currentItem?.mediaId}"
+	}
+
+	private fun buildNotification(): Notification {
 		val customLayout = RemoteViews(packageName, R.layout.notification)
 
 		// PLAY:
@@ -972,9 +1027,7 @@ class WebAppPlaybackService : MediaSessionService() {
 			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 		)
 		customLayout.setOnClickPendingIntent(R.id.media_play, playPendingIntent)
-		customLayout.setViewVisibility(R.id.media_play,
-			if (playing) View.GONE else View.VISIBLE
-		)
+		customLayout.setViewVisibility(R.id.media_play, if (playing) View.GONE else View.VISIBLE)
 
 		// PAUSE:
 		val pausePendingIntent = PendingIntent.getBroadcast(this, 101,
@@ -982,9 +1035,7 @@ class WebAppPlaybackService : MediaSessionService() {
 			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 		)
 		customLayout.setOnClickPendingIntent(R.id.media_pause, pausePendingIntent)
-		customLayout.setViewVisibility(R.id.media_pause,
-			if (playing) View.VISIBLE else View.GONE
-		)
+		customLayout.setViewVisibility(R.id.media_pause, if (playing) View.VISIBLE else View.GONE)
 
 		// PREV:
 		val prevPendingIntent = PendingIntent.getBroadcast(this, 102,
@@ -1001,7 +1052,7 @@ class WebAppPlaybackService : MediaSessionService() {
 		customLayout.setOnClickPendingIntent(R.id.media_next, nextPendingIntent)
 
 		// Elhúzáskor:
-		val dismissPendingIntent = PendingIntent.getBroadcast(this, 99,
+		val dismissPendingIntent = PendingIntent.getBroadcast(this, 104,
 			Intent(ACTION_NOTIFICATION_DISMISSED).apply { setPackage(packageName) },
 			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 		)
@@ -1010,7 +1061,6 @@ class WebAppPlaybackService : MediaSessionService() {
 			setSmallIcon(R.drawable.ic_launcher_monochrome)
 			setCustomContentView(customLayout)
 			setDeleteIntent(dismissPendingIntent)
-			setOngoing(true)
 			setSilent(true)
 			build()
 		}
@@ -1018,13 +1068,8 @@ class WebAppPlaybackService : MediaSessionService() {
 
 	private val notificationDismissReceiver = object : BroadcastReceiver() {
 		override fun onReceive(context: Context?, intent: Intent?) {
-			updateNotification()
+			updateNotificationAction.invoke()
 		}
-	}
-
-	private fun updateNotification() {
-		if (ActivityCompat.checkSelfPermission(this@WebAppPlaybackService, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-		NotificationManagerCompat.from(this@WebAppPlaybackService).notify(1, createNotification())
 	}
 
 	@UnstableApi
@@ -1050,7 +1095,6 @@ class WebAppPlaybackService : MediaSessionService() {
 			override fun onIsPlayingChanged(isPlaying: Boolean) {
 				super.onIsPlayingChanged(isPlaying)
 				playing = isPlaying
-				updateNotification()
 			}
 		})
 
@@ -1059,16 +1103,51 @@ class WebAppPlaybackService : MediaSessionService() {
 			build()
 		}
 
+		val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+		val channel = NotificationChannel(packageName, "WebAppMedia", NotificationManager.IMPORTANCE_LOW)
+		channel.setShowBadge(false)
+		notificationManager.createNotificationChannel(channel)
+
+		setMediaNotificationProvider(object : MediaNotification.Provider {
+			override fun createNotification(
+				mediaSession: MediaSession,
+				customLayout: ImmutableList<CommandButton>,
+				actionFactory: MediaNotification.ActionFactory,
+				onNotificationChangedListener: MediaNotification.Provider.Callback
+			): MediaNotification {
+				val currentStateKey = getMediaStateKey()
+
+				// Kilépés a már meglévő értesítéssel, hogy ne fusson le 20x egymás után:
+				if (currentStateKey == cachedStateKey && cachedNotification != null) {
+					return cachedNotification!!
+				}
+
+				val notification = buildNotification()
+				val mediaNotification = MediaNotification(1988, notification)
+
+				updateNotificationAction = {
+					onNotificationChangedListener.onNotificationChanged(mediaNotification)
+				}
+
+				cachedStateKey = currentStateKey
+				cachedNotification = mediaNotification
+
+				return mediaNotification
+			}
+
+			override fun handleCustomCommand(session: MediaSession, action: String, extras: Bundle): Boolean = false
+
+			override fun getNotificationChannelInfo(): MediaNotification.Provider.NotificationChannelInfo {
+				return MediaNotification.Provider.NotificationChannelInfo(packageName, R.string.app_name.toString())
+			}
+		})
+
 		ContextCompat.registerReceiver(this,
 			notificationDismissReceiver,
 			IntentFilter(ACTION_NOTIFICATION_DISMISSED),
 			ContextCompat.RECEIVER_NOT_EXPORTED
 		)
-
-		startForeground(1, createNotification())
 	}
-
-	override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {}
 
 	override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
 
@@ -1077,13 +1156,12 @@ class WebAppPlaybackService : MediaSessionService() {
 		try { unregisterReceiver(notificationDismissReceiver) } catch (_: Exception) {}
 
 		mediaSession.run {
-			player.stop()
+			player.pause()
 			player.clearMediaItems()
+			player.stop()
 			player.release()
 			release()
 		}
-
-		try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
 
 		"MediaService, onDestroy".log()
 

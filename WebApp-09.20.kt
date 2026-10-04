@@ -417,6 +417,7 @@ class WebApp(
 		// Osztályok:
 		bluetooth = BlueTooth(activity)
 		javaScript = JsInterface(innerWebView, dpiScale)
+		media = WebAppMedia(activity, innerWebView).create()
 		innerWebView.addJavascriptInterface(javaScript, "android")
 
 		// Bluetooth:
@@ -498,7 +499,7 @@ class WebApp(
 			// WebView hozzáadás:
 			activity.windowManager.addView(innerWebView, webViewParams)
 
-			media = WebAppMedia(activity, innerWebView, webViewParams).create()
+			media.params(webViewParams)
 		}
 
 
@@ -766,12 +767,14 @@ class WebApp(
 
 class WebAppMedia(
 	private val act: ComponentActivity,
-	private val wv: WebView,
-	private val wvParams: WindowManager.LayoutParams
+	private val wv: WebView
 ) {
+
 	lateinit var controller: MediaController
 	var onReady: (() -> Unit) = {}
+	fun params(params: WindowManager.LayoutParams) { wvParams = params }
 
+	private lateinit var wvParams: WindowManager.LayoutParams
 	private lateinit var future: ListenableFuture<MediaController>
 	private var controllerPlayCallback: (() -> Unit) = {}
 	private var controllerPauseCallback: (() -> Unit) = {}
@@ -946,7 +949,7 @@ class WebAppMedia(
 
 
 	fun topResumedActivityChanged(isTopResumedActivity: Boolean) {
-		if (!Settings.canDrawOverlays(act)) return
+		if (!Settings.canDrawOverlays(act) || !::wvParams.isInitialized) return
 		// onResume:
 		if (isTopResumedActivity) {
 			wvParams.flags = wvParams.flags and (
@@ -1103,6 +1106,7 @@ class WebAppPlaybackService : MediaSessionService() {
 			build()
 		}
 
+		// Kötelező !! Nem tudom miért, de ha nincs akkor crash van!
 		val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
 		val channel = NotificationChannel(packageName, "WebAppMedia", NotificationManager.IMPORTANCE_LOW)
 		channel.setShowBadge(false)
@@ -1138,7 +1142,7 @@ class WebAppPlaybackService : MediaSessionService() {
 			override fun handleCustomCommand(session: MediaSession, action: String, extras: Bundle): Boolean = false
 
 			override fun getNotificationChannelInfo(): MediaNotification.Provider.NotificationChannelInfo {
-				return MediaNotification.Provider.NotificationChannelInfo(packageName, R.string.app_name.toString())
+				return MediaNotification.Provider.NotificationChannelInfo(packageName, getString(R.string.app_name))
 			}
 		})
 

@@ -22,7 +22,6 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -64,18 +63,10 @@ import androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC
 import androidx.media3.common.C.USAGE_MEDIA
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
-import androidx.media3.common.Player
-import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.session.CommandButton
-import androidx.media3.session.MediaController
-import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
-import androidx.media3.session.SessionToken
-import com.google.common.collect.ImmutableList
-import com.google.common.util.concurrent.ListenableFuture
 import java.io.ByteArrayInputStream
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -174,8 +165,8 @@ class WebApp(
 	private var windowStyle: Int = STYLE_NORMAL
 ) {
 
-	class JsInterface(private val wv: WebView, private val dpi: Float) {
-		private var commandCallback: ((id: String, params: List<String>) -> Unit) = { _,_ -> }
+	class JsInterface(private val webview: WebView, private val dpi: Float) {
+		private var commandCallback: ((id: String, params: List<String>) -> Unit) ?= null
 
 		/**
 		 *	// Az onStart után, az onLoad előtt adja hozzá !
@@ -196,7 +187,7 @@ class WebApp(
 				val params = value.split(",")
 					.map { it.trim() }
 					.filter { it.isNotEmpty() }
-				commandCallback.invoke(id, params)
+				commandCallback?.invoke(id, params)
 			}
 		}
 
@@ -209,9 +200,9 @@ class WebApp(
 		 *	}
 		 */
 		fun send(js: String, callback: ((String) -> Unit)? = null) {
-			wv.post {
+			webview.post {
 				val script = if (js.startsWith("[") && js.endsWith("]")) "$js.join(',')" else js
-				wv.evaluateJavascript(script) { result ->
+				webview.evaluateJavascript(script) { result ->
 					result?.let { res ->
 						callback?.invoke(res.replace("\"", ""))
 					}
@@ -225,7 +216,7 @@ class WebApp(
 		fun touch(jsLeft: Int, jsTop: Int) {
 			val left = (jsLeft * dpi).toInt()
 			val top = (jsTop * dpi).toInt()
-			wv.touch(left, top)
+			webview.touch(left, top)
 		}
 
 		class StatusBar {
@@ -247,7 +238,7 @@ class WebApp(
 
 
 	class BlueTooth(private val act: ComponentActivity) {
-		private var bluetoothEventCallback: ((String) -> Unit) = {}
+		private var bluetoothEventCallback: ((String) -> Unit) ?= null
 
 		fun connectedName(callback: ((name: String) -> Unit) ?= null) {
 			callback?.let { bluetoothEventCallback = it }
@@ -264,14 +255,14 @@ class WebApp(
 
 							if (isConnected) {
 								val deviceName = try { device.name } catch (e: Exception) { device.address }
-								bluetoothEventCallback.invoke(deviceName)
+								bluetoothEventCallback?.invoke(deviceName)
 								return
 							}
 						}
 				} catch (e: Exception) {}
 			}
 
-			bluetoothEventCallback.invoke("none")
+			bluetoothEventCallback?.invoke("none")
 		}
 	}
 
@@ -281,35 +272,25 @@ class WebApp(
 				BluetoothDevice.ACTION_ACL_CONNECTED, BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
 					bluetooth.connectedName()
 				}
-				WebAppPlaybackService.ACTION_MEDIA_PLAY -> {
-					media.play()
+				SERVICE_MEDIA_PLAY -> {
+					media.play(true)
 				}
-				WebAppPlaybackService.ACTION_MEDIA_PAUSE -> {
-					media.pause()
+				SERVICE_MEDIA_PAUSE -> {
+					media.pause(true)
 				}
-				WebAppPlaybackService.ACTION_MEDIA_PREV -> {
-					media.prev()
+				SERVICE_MEDIA_PREV -> {
+					media.prev(true)
 				}
-				WebAppPlaybackService.ACTION_MEDIA_NEXT -> {
-					media.next()
+				SERVICE_MEDIA_NEXT -> {
+					media.next(true)
+				}
+				SERVICE_MEDIA_START -> {
+					media.started()
+					media.play(true)
 				}
 			}
 		}
 	}
-
-
-	// Global ---------------------------------->
-	companion object {
-		const val TYPE_NORMAL = 0
-		const val TYPE_MEDIA = 1
-		const val STYLE_NORMAL = 0
-		const val STYLE_EDGE_TO_EDGE = 1
-		const val STYLE_FULL_SCREEN = 2
-		const val ORIENTATION_AUTO = 0
-		const val ORIENTATION_PORTRAIT = 1
-		const val ORIENTATION_LANDSCAPE = 2
-	}
-
 
 	// Protected ------------------------------->
 	var display = activity.windowManager.currentWindowMetrics.bounds
@@ -417,7 +398,7 @@ class WebApp(
 		// Osztályok:
 		bluetooth = BlueTooth(activity)
 		javaScript = JsInterface(innerWebView, dpiScale)
-		media = WebAppMedia(activity, innerWebView).create()
+		media = WebAppMedia(activity, innerWebView)
 		innerWebView.addJavascriptInterface(javaScript, "android")
 
 		// Bluetooth:
@@ -444,10 +425,11 @@ class WebApp(
 
 		// Bluetooth register csak ha van overlay engedély!!
 		ContextCompat.registerReceiver(activity, receiver, IntentFilter().apply {
-			addAction(WebAppPlaybackService.ACTION_MEDIA_PLAY)
-			addAction(WebAppPlaybackService.ACTION_MEDIA_PAUSE)
-			addAction(WebAppPlaybackService.ACTION_MEDIA_PREV)
-			addAction(WebAppPlaybackService.ACTION_MEDIA_NEXT)
+			addAction(SERVICE_MEDIA_PLAY)
+			addAction(SERVICE_MEDIA_PAUSE)
+			addAction(SERVICE_MEDIA_PREV)
+			addAction(SERVICE_MEDIA_NEXT)
+			addAction(SERVICE_MEDIA_START)
 			addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
 			addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
 		}, ContextCompat.RECEIVER_NOT_EXPORTED)
@@ -757,6 +739,22 @@ class WebApp(
 		// Maradék:
 		MAIN_LOOPER.postDelayed({ Runtime.getRuntime().exit(0) }, 300)
 	}
+
+	companion object {
+		const val TYPE_NORMAL = 0
+		const val TYPE_MEDIA = 1
+		const val STYLE_NORMAL = 0
+		const val STYLE_EDGE_TO_EDGE = 1
+		const val STYLE_FULL_SCREEN = 2
+		const val ORIENTATION_AUTO = 0
+		const val ORIENTATION_PORTRAIT = 1
+		const val ORIENTATION_LANDSCAPE = 2
+		const val SERVICE_MEDIA_PLAY = "action_1"
+		const val SERVICE_MEDIA_PAUSE = "action_2"
+		const val SERVICE_MEDIA_PREV = "action_3"
+		const val SERVICE_MEDIA_NEXT = "action_4"
+		const val SERVICE_MEDIA_START = "action_5"
+	}
 }
 
 
@@ -766,75 +764,31 @@ class WebApp(
 
 
 class WebAppMedia(
-	private val act: ComponentActivity,
-	private val wv: WebView
+	private val activity: ComponentActivity,
+	private val webview: WebView
 ) {
 
-	lateinit var controller: MediaController
-	var onReady: (() -> Unit) = {}
-	fun params(params: WindowManager.LayoutParams) { wvParams = params }
-
-	private lateinit var wvParams: WindowManager.LayoutParams
-	private lateinit var future: ListenableFuture<MediaController>
-	private var controllerPlayCallback: (() -> Unit) = {}
-	private var controllerPauseCallback: (() -> Unit) = {}
-	private var controllerPrevCallback: (() -> Unit) = {}
-	private var controllerNextCallback: (() -> Unit) = {}
-	private var controllerChangedCallback: (() -> Unit) = {}
-	private val powerManager = act.getSystemService(POWER_SERVICE) as PowerManager
+	private lateinit var parameters: WindowManager.LayoutParams
+	private var onStartCallback: (() -> Unit) ?= null
+	private var onPlayCallback: (() -> Unit) ?= null
+	private var onPauseCallback: (() -> Unit) ?= null
+	private var onPrevCallback: (() -> Unit) ?= null
+	private var onNextCallback: (() -> Unit) ?= null
+	private var onChangedCallback: (() -> Unit) ?= null
+	private var onStopCallback: (() -> Unit) ?= null
+	private val powerManager = activity.getSystemService(POWER_SERVICE) as PowerManager
 	private var resumedActivity = false
 	private var screenOn = false
-	private var changed = false
-	private val listener = object : Player.Listener {
 
-		fun change(e: String) {
-			events += e
-			MAIN_LOOPER.removeCallbacks(ev)
-			MAIN_LOOPER.postDelayed(ev, 200)
-		}
+	private fun sendToService(keyCode: Int) {
+		val intent = Intent(Intent.ACTION_MEDIA_BUTTON)
+		intent.component = ComponentName(activity, WebAppPlaybackService::class.java)
+		intent.putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+		activity.startService(intent)
+	}
 
-		var events = ""
-		val ev = Runnable {
-
-			if (events == "PLAY") {
-				controllerPlayCallback.invoke()
-				changed = false
-			}
-			else if (events == "PAUSE") {
-				controllerPauseCallback.invoke()
-			}
-			else if (events.contains("PREV")) {
-				controller.seekTo(1, 0)
-				controllerPrevCallback.invoke()
-			}
-			else if (events.contains("NEXT")) {
-				controller.seekTo(1, 0)
-				controllerNextCallback.invoke()
-			}
-
-			events = ""
-		}
-
-		override fun onIsPlayingChanged(isPlaying: Boolean) {
-			change(if (isPlaying) "PLAY" else "PAUSE")
-		}
-
-		override fun onTracksChanged(tracks: Tracks) {
-			if (changed || tracks.groups.isEmpty()) return
-			changed = true
-			when (controller.currentMediaItemIndex) {
-				0 -> {
-					controller.pause()	// Szépen megálljon, ne villogjon a PLAY gomb
-					controllerChangedCallback.invoke()
-					change("PREV")
-				}
-				2 -> {
-					controller.pause()
-					controllerChangedCallback.invoke()
-					change("NEXT")
-				}
-			}
-		}
+	fun params(params: WindowManager.LayoutParams) {
+		parameters = params
 	}
 
 	fun events(
@@ -842,127 +796,82 @@ class WebAppMedia(
 		onPause: (() -> Unit) ?= null,
 		onPrev: (() -> Unit) ?= null,
 		onNext: (() -> Unit) ?= null,
-		onChanged: (() -> Unit) ?= null
+		onChanged: (() -> Unit) ?= null,
+		onStart: (() -> Unit) ?= null,
+		onStop: (() -> Unit) ?= null
 	) {
-		onPlay?.let { controllerPlayCallback = it }
-		onPause?.let { controllerPauseCallback = it }
-		onPrev?.let { controllerPrevCallback = it }
-		onNext?.let { controllerNextCallback = it }
-		onChanged?.let { controllerChangedCallback = it }
+		onPlay?.let { onPlayCallback = it }
+		onPause?.let { onPauseCallback = it }
+		onPrev?.let { onPrevCallback = it }
+		onNext?.let { onNextCallback = it }
+		onChanged?.let { onChangedCallback = it }
+		onStart?.let { onStartCallback = it }
+		onStop?.let { onStopCallback = it }
 	}
 
-	fun create(): WebAppMedia {
-		val sessionToken = SessionToken(act.applicationContext, ComponentName(act.applicationContext, WebAppPlaybackService::class.java))
-		future = MediaController.Builder(act, sessionToken).buildAsync()
-		future.addListener({
-			controller = future.get()
-			controller.addListener(listener)
-			wv.post { onReady.invoke() }
-		}, ContextCompat.getMainExecutor(act))
-		return this
-	}
-
-	/**
-	 *	// title: Zene címe
-	 *	// background: hexColor, imageURL, default
-	 */
-	fun start(title: String, background: String = "") {
-
-		if (!::controller.isInitialized) return
-
-		/*val parsedColor = when {
-			background.startsWith("#") -> background.toColorInt()
-			isSystemLightMode(act) -> Color.WHITE
-			else -> Color.BLACK
-		}
-
-		val artworkBytes = ByteArrayOutputStream().use { stream ->
-			Bitmap.createBitmap(10, 10, Bitmap.Config.RGB_565).apply {
-				eraseColor(parsedColor)
-				compress(Bitmap.CompressFormat.JPEG, 80, stream)
-				recycle()
+	// onStartCommand:
+	fun start(title: String) {
+		activity.startForegroundService(
+			Intent(activity, WebAppPlaybackService::class.java).apply {
+				putExtra("EXTRA_MEDIA_TITLE", title)
 			}
-			stream.toByteArray()
-		}*/
-
-		val noNameItem = MediaItem.Builder().run {
-			setMediaId("noname")
-			setUri("asset:///silent.mp3")
-			setMediaMetadata(MediaMetadata.Builder().run {
-				setTitle("...")
-				//setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
-				build()
-			})
-			build()
-		}
-
-		val mainItem = MediaItem.Builder().run {
-			setMediaId("main")
-			setUri("asset:///silent.mp3")
-			setMediaMetadata(MediaMetadata.Builder().run {
-				setTitle(title)
-				// teszt "https://i.ytimg.com/vi/e8_Ddw0H0YA/sddefault.jpg"
-				//if (background.startsWith("http")) setArtworkUri(background.toUri())
-				//else setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_MEDIA)
-				build()
-			})
-			build()
-		}
-
-		controller.apply {
-			replaceMediaItem(0, noNameItem)
-			replaceMediaItem(1, mainItem)
-			replaceMediaItem(2, noNameItem)
-			prepare()
-			seekTo(1, 0)
-			setPlaybackSpeed(0.1f)
-			playWhenReady = true
-		}
-	}
-
-
-	fun play() {
-		controller.play()	// frissülni fog az értesítés és lefut a callback !
-	}
-
-	fun pause() {
-		controller.pause()	// frissülni fog az értesítés és lefut a callback !
-	}
-
-	fun prev() {
-		if (changed) return
-		controller.pause()
-		controller.seekTo(0,0)
-	}
-
-	fun next() {
-		if (changed) return
-		controller.pause()
-		controller.seekTo(2,0)
+		)
 	}
 
 	fun stop() {
-		controller.pause()
-		controller.clearMediaItems()
-		controller.stop()
+		onPauseCallback?.invoke()
+		onStopCallback?.invoke()
+		activity.stopService(Intent(activity, WebAppPlaybackService::class.java))
+	}
+
+	fun started() {
+		onStartCallback?.invoke()
+	}
+
+	fun play(fromService: Boolean ?= false) {
+		// Service:
+		if (fromService == true) onPlayCallback?.invoke()
+		// Activity:
+		else sendToService(KeyEvent.KEYCODE_MEDIA_PLAY)
+	}
+
+	fun pause(fromService: Boolean ?= false) {
+		if (fromService == true) onPauseCallback?.invoke()
+		else sendToService(KeyEvent.KEYCODE_MEDIA_PAUSE)
+	}
+
+	fun prev(fromService: Boolean ?= false) {
+		if (fromService == true) {
+			onChangedCallback?.invoke()
+			onPrevCallback?.invoke()
+		}
+		else sendToService(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+	}
+
+	fun next(fromService: Boolean ?= false) {
+		if (fromService == true) {
+			onChangedCallback?.invoke()
+			onNextCallback?.invoke()
+		}
+		else sendToService(KeyEvent.KEYCODE_MEDIA_NEXT)
 	}
 
 
 	fun topResumedActivityChanged(isTopResumedActivity: Boolean) {
-		if (!Settings.canDrawOverlays(act) || !::wvParams.isInitialized) return
+		if (!Settings.canDrawOverlays(activity) || !::parameters.isInitialized) return
 		// onResume:
 		if (isTopResumedActivity) {
-			wvParams.flags = wvParams.flags and (
+			parameters.flags = parameters.flags and (
 					WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
 					WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
 			).inv()
-			act.windowManager.updateViewLayout(wv, wvParams)
-			wv.requestFocus()
+			activity.windowManager.updateViewLayout(webview, parameters)
+			webview.requestFocus()
 			// App megnyitásakor még ne fusson le az onLoad miatt !
 			if (resumedActivity) {
 				// Zárt képernyő utáni visszatéréskor:
-				if (!screenOn) wv.alpha = 1f
-				else wv.animate()?.alpha(1f)?.setDuration(100)?.startDelay = 300
+				if (!screenOn) webview.alpha = 1f
+				else webview.animate()?.alpha(1f)?.setDuration(100)?.startDelay = 300
 			}
 			else resumedActivity = true
 			return
@@ -970,35 +879,28 @@ class WebAppMedia(
 		// OnPause:
 		screenOn = powerManager.isInteractive
 
-		wvParams.flags = wvParams.flags or
+		parameters.flags = parameters.flags or
 				WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
 				WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
 
-		act.windowManager.updateViewLayout(wv, wvParams)
-		wv.animate()?.alpha(0f)?.setDuration(200)?.startDelay = 0
+		activity.windowManager.updateViewLayout(webview, parameters)
+		webview.animate()?.alpha(0f)?.setDuration(200)?.startDelay = 0
 	}
-
 
 
 	fun destroy() {
-		controllerPlayCallback = {}
-		controllerPauseCallback = {}
-		controllerPrevCallback = {}
-		controllerNextCallback = {}
-		controllerChangedCallback = {}
-		onReady = {}
-
-		controller.apply {
-			removeListener(listener)
-			pause()
-			clearMediaItems()
-			stop()
-			release()
-		}
-
-		try { MediaController.releaseFuture(future) } catch (_: Throwable) {}
+		stop()
+		onPlayCallback = null
+		onPauseCallback = null
+		onPrevCallback = null
+		onNextCallback = null
+		onChangedCallback = null
+		onStartCallback = null
+		onStopCallback = null
 	}
 }
+
+
 
 
 
@@ -1009,77 +911,123 @@ class WebAppMedia(
 class WebAppPlaybackService : MediaSessionService() {
 
 	private lateinit var mediaSession: MediaSession
-	private var updateNotificationAction: (() -> Unit) = {}
-	private var cachedNotification: MediaNotification? = null
-	private var cachedStateKey: String? = null
-	private var playing = false
+	private lateinit var notificationManager: NotificationManager
 
-	private fun getMediaStateKey(): String {
-		val currentItem = mediaSession.player.currentMediaItem
-		val title = currentItem?.mediaMetadata?.title ?: ""
-		val artist = currentItem?.mediaMetadata?.artist ?: ""
-		return "$playing|$title|$artist|${currentItem?.mediaId}"
+	private val dismissedAction = "dismissed"
+	private val notificationId = 43234
+	private val channelId = "WebAppMediaPlayback"
+	private var played = true
+
+	private fun sendToWebApp(action: String) {
+		sendBroadcast(Intent(action).apply {
+			setPackage(packageName)
+		})
 	}
 
+	private fun sendToService(keyCode: Int): PendingIntent {
+		val intent = Intent(Intent.ACTION_MEDIA_BUTTON)
+		intent.component = ComponentName(this, WebAppPlaybackService::class.java)
+		intent.putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+		return PendingIntent.getService(this, keyCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+	}
+
+	// Blokkoljuk a Media3 értesítését !!!
+	override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {}
+
+	// Saját értesítés:
 	private fun buildNotification(): Notification {
-		val customLayout = RemoteViews(packageName, R.layout.notification)
+		val customLayout = RemoteViews(packageName, R.layout.notification).apply {
 
-		// PLAY:
-		val playPendingIntent = PendingIntent.getBroadcast(this, 100,
-			Intent(ACTION_MEDIA_PLAY).apply { setPackage(packageName) },
-			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-		)
-		customLayout.setOnClickPendingIntent(R.id.media_play, playPendingIntent)
-		customLayout.setViewVisibility(R.id.media_play, if (playing) View.GONE else View.VISIBLE)
+			setViewVisibility(R.id.media_play, if (played) View.GONE else View.VISIBLE)
+			setViewVisibility(R.id.media_pause, if (played) View.VISIBLE else View.GONE)
 
-		// PAUSE:
-		val pausePendingIntent = PendingIntent.getBroadcast(this, 101,
-			Intent(ACTION_MEDIA_PAUSE).apply { setPackage(packageName) },
-			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-		)
-		customLayout.setOnClickPendingIntent(R.id.media_pause, pausePendingIntent)
-		customLayout.setViewVisibility(R.id.media_pause, if (playing) View.VISIBLE else View.GONE)
-
-		// PREV:
-		val prevPendingIntent = PendingIntent.getBroadcast(this, 102,
-			Intent(ACTION_MEDIA_PREV).apply { setPackage(packageName) },
-			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-		)
-		customLayout.setOnClickPendingIntent(R.id.media_prev, prevPendingIntent)
-
-		// NEXT:
-		val nextPendingIntent = PendingIntent.getBroadcast(this, 103,
-			Intent(ACTION_MEDIA_NEXT).apply { setPackage(packageName) },
-			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-		)
-		customLayout.setOnClickPendingIntent(R.id.media_next, nextPendingIntent)
+			setOnClickPendingIntent(R.id.media_play, sendToService(KeyEvent.KEYCODE_MEDIA_PLAY))
+			setOnClickPendingIntent(R.id.media_pause, sendToService(KeyEvent.KEYCODE_MEDIA_PAUSE))
+			setOnClickPendingIntent(R.id.media_prev, sendToService(KeyEvent.KEYCODE_MEDIA_PREVIOUS))
+			setOnClickPendingIntent(R.id.media_next, sendToService(KeyEvent.KEYCODE_MEDIA_NEXT))
+		}
 
 		// Elhúzáskor:
-		val dismissPendingIntent = PendingIntent.getBroadcast(this, 104,
-			Intent(ACTION_NOTIFICATION_DISMISSED).apply { setPackage(packageName) },
+		val dismissPendingIntent = PendingIntent.getBroadcast(this, 100,
+			Intent(dismissedAction).apply { setPackage(packageName) },
 			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 		)
 
-		return NotificationCompat.Builder(this, packageName).run {
+		return NotificationCompat.Builder(this, channelId).run {
 			setSmallIcon(R.drawable.ic_launcher_monochrome)
 			setCustomContentView(customLayout)
+			setCustomBigContentView(customLayout)
+			setStyle(NotificationCompat.DecoratedCustomViewStyle())
 			setDeleteIntent(dismissPendingIntent)
 			setSilent(true)
 			build()
 		}
 	}
 
+	private fun updateNotification(show: Boolean) {
+		if (show) notificationManager.notify(notificationId, buildNotification())
+		else notificationManager.cancel(notificationId)
+	}
+
+	// Elhúzáskor visszaállítás, mert az setOngoing nem működik !
 	private val notificationDismissReceiver = object : BroadcastReceiver() {
 		override fun onReceive(context: Context?, intent: Intent?) {
-			updateNotificationAction.invoke()
+			updateNotification(true)
 		}
 	}
+
+	private val mediaSessionCallback = object : MediaSession.Callback {
+		@UnstableApi
+		override fun onMediaButtonEvent(
+			session: MediaSession,
+			controllerInfo: MediaSession.ControllerInfo,
+			intent: Intent
+		): Boolean {
+			intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)?.let {
+				if (it.action == KeyEvent.ACTION_DOWN) {
+					// Késleltetés:
+					MAIN_LOOPER.post { updateNotification(true) }
+					// Events:
+					when (it.keyCode) {
+						KeyEvent.KEYCODE_MEDIA_PLAY -> {
+							mediaSession.player.play()		//-> Bluetooth miatt kell !
+							played = true					//-> Értesítéshez kell !
+							sendToWebApp(WebApp.SERVICE_MEDIA_PLAY)
+							return true
+						}
+						KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+							mediaSession.player.pause()
+							played = false
+							sendToWebApp(WebApp.SERVICE_MEDIA_PAUSE)
+							return true
+						}
+						KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+							sendToWebApp(WebApp.SERVICE_MEDIA_PREV)
+							return true
+						}
+						KeyEvent.KEYCODE_MEDIA_NEXT -> {
+							sendToWebApp(WebApp.SERVICE_MEDIA_NEXT)
+							return true
+						}
+					}
+				}
+			}
+			return super.onMediaButtonEvent(session, controllerInfo, intent)
+		}
+	}
+
+
 
 	@UnstableApi
 	override fun onCreate() {
 		super.onCreate()
 
 		"MediaService, onCreate".log()
+
+		// Értesítés regisztráció:
+		val channel = NotificationChannel(channelId, "MediaPlayback", NotificationManager.IMPORTANCE_LOW)
+		notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+		notificationManager.createNotificationChannel(channel)
 
 		val attr = AudioAttributes.Builder().run {
 			setContentType(AUDIO_CONTENT_TYPE_MUSIC)
@@ -1094,72 +1042,60 @@ class WebAppPlaybackService : MediaSessionService() {
 			build()
 		}
 
-		player.addListener(object : Player.Listener {
-			override fun onIsPlayingChanged(isPlaying: Boolean) {
-				super.onIsPlayingChanged(isPlaying)
-				playing = isPlaying
-			}
-		})
-
 		mediaSession = MediaSession.Builder(this, player).run {
 			setId("WebAppSession:$packageName")
+			setCallback(mediaSessionCallback)
 			build()
 		}
 
-		// Kötelező !! Nem tudom miért, de ha nincs akkor crash van!
-		val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-		val channel = NotificationChannel(packageName, "WebAppMedia", NotificationManager.IMPORTANCE_LOW)
-		channel.setShowBadge(false)
-		notificationManager.createNotificationChannel(channel)
-
-		setMediaNotificationProvider(object : MediaNotification.Provider {
-			override fun createNotification(
-				mediaSession: MediaSession,
-				customLayout: ImmutableList<CommandButton>,
-				actionFactory: MediaNotification.ActionFactory,
-				onNotificationChangedListener: MediaNotification.Provider.Callback
-			): MediaNotification {
-				val currentStateKey = getMediaStateKey()
-
-				// Kilépés a már meglévő értesítéssel, hogy ne fusson le 20x egymás után:
-				if (currentStateKey == cachedStateKey && cachedNotification != null) {
-					return cachedNotification!!
-				}
-
-				val notification = buildNotification()
-				val mediaNotification = MediaNotification(1988, notification)
-
-				updateNotificationAction = {
-					onNotificationChangedListener.onNotificationChanged(mediaNotification)
-				}
-
-				cachedStateKey = currentStateKey
-				cachedNotification = mediaNotification
-
-				return mediaNotification
-			}
-
-			override fun handleCustomCommand(session: MediaSession, action: String, extras: Bundle): Boolean = false
-
-			override fun getNotificationChannelInfo(): MediaNotification.Provider.NotificationChannelInfo {
-				return MediaNotification.Provider.NotificationChannelInfo(packageName, getString(R.string.app_name))
-			}
-		})
-
 		ContextCompat.registerReceiver(this,
 			notificationDismissReceiver,
-			IntentFilter(ACTION_NOTIFICATION_DISMISSED),
+			IntentFilter(dismissedAction),
 			ContextCompat.RECEIVER_NOT_EXPORTED
 		)
+
+		startForeground(notificationId, buildNotification())
 	}
 
-	override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
+
+	override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+		super.onStartCommand(intent, flags, startId)
+		if (intent == null) return START_STICKY
+
+		val mediaTitle = intent.getStringExtra("EXTRA_MEDIA_TITLE") ?: return START_STICKY
+
+		val item = MediaItem.Builder().run {
+			setMediaId("noname")
+			setUri("asset:///silent.mp3")
+			setMediaMetadata(MediaMetadata.Builder().run {
+				setTitle(mediaTitle)
+				build()
+			})
+			build()
+		}
+
+		mediaSession.player.apply {
+			setMediaItem(item)
+			setPlaybackSpeed(0.1f)
+			playWhenReady = true
+			prepare()
+		}
+
+		sendToWebApp(WebApp.SERVICE_MEDIA_START)
+
+		return START_STICKY
+	}
+
+
+	override fun onGetSession(controllerInfo: MediaSession.ControllerInfo):
+			MediaSession = mediaSession
+
 
 	override fun onDestroy() {
 
 		try { unregisterReceiver(notificationDismissReceiver) } catch (_: Exception) {}
 
-		mediaSession.run {
+		mediaSession.apply {
 			player.pause()
 			player.clearMediaItems()
 			player.stop()
@@ -1167,17 +1103,12 @@ class WebAppPlaybackService : MediaSessionService() {
 			release()
 		}
 
+		stopForeground(STOP_FOREGROUND_REMOVE)
+		updateNotification(false)
+		stopSelf()
+
 		"MediaService, onDestroy".log()
-
 		super.onDestroy()
-	}
-
-	companion object {
-		const val ACTION_NOTIFICATION_DISMISSED = "ACTION_0"
-		const val ACTION_MEDIA_PAUSE = "ACTION_1"
-		const val ACTION_MEDIA_PLAY = "ACTION_2"
-		const val ACTION_MEDIA_PREV = "ACTION_3"
-		const val ACTION_MEDIA_NEXT = "ACTION_4"
 	}
 }
 
@@ -1305,7 +1236,7 @@ private var defaultAPI = """
         android:layout_height="wrap_content"
         android:layout_weight="1"
         android:text="▶"
-        android:textSize="28sp"
+        android:textSize="30sp"
         android:paddingTop="0dp"
         android:paddingBottom="5dp"
         tools:ignore="HardcodedText" />

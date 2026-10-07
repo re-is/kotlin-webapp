@@ -21,6 +21,7 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.Looper
@@ -51,6 +52,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
+import androidx.core.graphics.drawable.IconCompat
 import androidx.core.graphics.withSave
 import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
@@ -63,6 +65,7 @@ import androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC
 import androidx.media3.common.C.USAGE_MEDIA
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
@@ -286,7 +289,6 @@ class WebApp(
 				}
 				SERVICE_MEDIA_START -> {
 					media.started()
-					media.play(true)
 				}
 			}
 		}
@@ -861,10 +863,16 @@ class WebAppMedia(
 		if (!Settings.canDrawOverlays(activity) || !::parameters.isInitialized) return
 		// onResume:
 		if (isTopResumedActivity) {
-			parameters.flags = parameters.flags and (
+			val display = activity.windowManager.currentWindowMetrics.bounds
+			parameters.apply {
+				// Elforgatás a háttérben miatt:
+				width = display.width()
+				height = display.height()
+				flags = parameters.flags and (
 					WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
 					WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-			).inv()
+				).inv()
+			}
 			activity.windowManager.updateViewLayout(webview, parameters)
 			webview.requestFocus()
 			// App megnyitásakor még ne fusson le az onLoad miatt !
@@ -910,13 +918,16 @@ class WebAppMedia(
 
 class WebAppPlaybackService : MediaSessionService() {
 
-	private lateinit var mediaSession: MediaSession
-	private lateinit var notificationManager: NotificationManager
+	private var mediaSession: MediaSession ?= null
+	private var notificationManager: NotificationManager ?= null
+	private var smallIcon: IconCompat ?= null
 
 	private val dismissedAction = "dismissed"
 	private val notificationId = 43234
 	private val channelId = "WebAppMediaPlayback"
-	private var played = true
+	private var loading = false
+	private val inactiveColor = Color.parseColor("#999999")
+	private var activeColor = 0
 
 	private fun sendToWebApp(action: String) {
 		sendBroadcast(Intent(action).apply {
@@ -938,13 +949,27 @@ class WebAppPlaybackService : MediaSessionService() {
 	private fun buildNotification(): Notification {
 		val customLayout = RemoteViews(packageName, R.layout.notification).apply {
 
-			setViewVisibility(R.id.media_play, if (played) View.GONE else View.VISIBLE)
-			setViewVisibility(R.id.media_pause, if (played) View.VISIBLE else View.GONE)
+			mediaSession?.player?.let {
+				setViewVisibility(R.id.media_play, if (it.isPlaying) View.GONE else View.VISIBLE)
+				setViewVisibility(R.id.media_pause, if (it.isPlaying) View.VISIBLE else View.GONE)
+			}
 
-			setOnClickPendingIntent(R.id.media_play, sendToService(KeyEvent.KEYCODE_MEDIA_PLAY))
-			setOnClickPendingIntent(R.id.media_pause, sendToService(KeyEvent.KEYCODE_MEDIA_PAUSE))
-			setOnClickPendingIntent(R.id.media_prev, sendToService(KeyEvent.KEYCODE_MEDIA_PREVIOUS))
-			setOnClickPendingIntent(R.id.media_next, sendToService(KeyEvent.KEYCODE_MEDIA_NEXT))
+			if (!loading) {
+				setOnClickPendingIntent(R.id.media_play, sendToService(KeyEvent.KEYCODE_MEDIA_PLAY))
+				setOnClickPendingIntent(R.id.media_pause, sendToService(KeyEvent.KEYCODE_MEDIA_PAUSE))
+				setOnClickPendingIntent(R.id.media_prev, sendToService(KeyEvent.KEYCODE_MEDIA_PREVIOUS))
+				setOnClickPendingIntent(R.id.media_next, sendToService(KeyEvent.KEYCODE_MEDIA_NEXT))
+				setTextColor(R.id.media_play, activeColor)
+				setTextColor(R.id.media_pause, activeColor)
+				setTextColor(R.id.media_prev, activeColor)
+				setTextColor(R.id.media_next, activeColor)
+			}
+			else {
+				setTextColor(R.id.media_play, inactiveColor)
+				setTextColor(R.id.media_pause, inactiveColor)
+				setTextColor(R.id.media_prev, inactiveColor)
+				setTextColor(R.id.media_next, inactiveColor)
+			}
 		}
 
 		// Elhúzáskor:
@@ -954,19 +979,21 @@ class WebAppPlaybackService : MediaSessionService() {
 		)
 
 		return NotificationCompat.Builder(this, channelId).run {
-			setSmallIcon(R.drawable.ic_launcher_monochrome)
+			setSmallIcon(smallIcon!!)
 			setCustomContentView(customLayout)
 			setCustomBigContentView(customLayout)
 			setStyle(NotificationCompat.DecoratedCustomViewStyle())
 			setDeleteIntent(dismissPendingIntent)
+			setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
 			setSilent(true)
 			build()
 		}
 	}
 
 	private fun updateNotification(show: Boolean) {
-		if (show) notificationManager.notify(notificationId, buildNotification())
-		else notificationManager.cancel(notificationId)
+		notificationManager?.apply {
+			if (show) notify(notificationId, buildNotification()) else cancel(notificationId)
+		}
 	}
 
 	// Elhúzáskor visszaállítás, mert az setOngoing nem működik !
@@ -985,27 +1012,29 @@ class WebAppPlaybackService : MediaSessionService() {
 		): Boolean {
 			intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)?.let {
 				if (it.action == KeyEvent.ACTION_DOWN) {
-					// Késleltetés:
-					MAIN_LOOPER.post { updateNotification(true) }
 					// Events:
 					when (it.keyCode) {
 						KeyEvent.KEYCODE_MEDIA_PLAY -> {
-							mediaSession.player.play()		//-> Bluetooth miatt kell !
-							played = true					//-> Értesítéshez kell !
-							sendToWebApp(WebApp.SERVICE_MEDIA_PLAY)
+							if (!loading) mediaSession?.player?.play()
 							return true
 						}
 						KeyEvent.KEYCODE_MEDIA_PAUSE -> {
-							mediaSession.player.pause()
-							played = false
-							sendToWebApp(WebApp.SERVICE_MEDIA_PAUSE)
+							if (!loading) mediaSession?.player?.pause()
 							return true
 						}
 						KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+							if (loading) return true
+							loading = true					// 1 #34534535
+							mediaSession?.player?.pause()	// 2
+							updateNotification(true)
 							sendToWebApp(WebApp.SERVICE_MEDIA_PREV)
 							return true
 						}
 						KeyEvent.KEYCODE_MEDIA_NEXT -> {
+							if (loading) return true
+							loading = true
+							mediaSession?.player?.pause()
+							updateNotification(true)
 							sendToWebApp(WebApp.SERVICE_MEDIA_NEXT)
 							return true
 						}
@@ -1024,10 +1053,24 @@ class WebAppPlaybackService : MediaSessionService() {
 
 		"MediaService, onCreate".log()
 
+		// SmallIcon:
+		val size = (12 * resources.displayMetrics.density).toInt()
+		val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+		val canvas = Canvas(bitmap)
+		val paint = Paint().apply {
+			color = Color.WHITE
+			isAntiAlias = true
+		}
+		canvas.drawCircle(size / 2f, size / 2f, size / 2.5f, paint)
+		smallIcon = IconCompat.createWithBitmap(bitmap)
+
+		// Nyil színek:
+		activeColor = if (isSystemLightMode(this)) Color.parseColor("#333333") else Color.parseColor("#eeeeee")
+
 		// Értesítés regisztráció:
 		val channel = NotificationChannel(channelId, "MediaPlayback", NotificationManager.IMPORTANCE_LOW)
 		notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-		notificationManager.createNotificationChannel(channel)
+		notificationManager?.createNotificationChannel(channel)
 
 		val attr = AudioAttributes.Builder().run {
 			setContentType(AUDIO_CONTENT_TYPE_MUSIC)
@@ -1041,6 +1084,18 @@ class WebAppPlaybackService : MediaSessionService() {
 			setAudioAttributes(attr, false)
 			build()
 		}
+
+		player.addListener(object : Player.Listener {
+			override fun onIsPlayingChanged(isPlaying: Boolean) {
+				super.onIsPlayingChanged(isPlaying)
+				// Váltáskor ez már nem fut le #34534535
+				if (!loading) {
+					updateNotification(true)
+					if (isPlaying) sendToWebApp(WebApp.SERVICE_MEDIA_PLAY)
+					else sendToWebApp(WebApp.SERVICE_MEDIA_PAUSE)
+				}
+			}
+		})
 
 		mediaSession = MediaSession.Builder(this, player).run {
 			setId("WebAppSession:$packageName")
@@ -1060,9 +1115,8 @@ class WebAppPlaybackService : MediaSessionService() {
 
 	override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
 		super.onStartCommand(intent, flags, startId)
-		if (intent == null) return START_STICKY
 
-		val mediaTitle = intent.getStringExtra("EXTRA_MEDIA_TITLE") ?: return START_STICKY
+		val mediaTitle = intent?.getStringExtra("EXTRA_MEDIA_TITLE") ?: return START_STICKY
 
 		val item = MediaItem.Builder().run {
 			setMediaId("noname")
@@ -1074,34 +1128,38 @@ class WebAppPlaybackService : MediaSessionService() {
 			build()
 		}
 
-		mediaSession.player.apply {
+		mediaSession?.player?.apply {
 			setMediaItem(item)
 			setPlaybackSpeed(0.1f)
 			playWhenReady = true
 			prepare()
 		}
 
+		loading = false
 		sendToWebApp(WebApp.SERVICE_MEDIA_START)
 
 		return START_STICKY
 	}
 
 
-	override fun onGetSession(controllerInfo: MediaSession.ControllerInfo):
-			MediaSession = mediaSession
+	override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession!!
 
 
 	override fun onDestroy() {
 
 		try { unregisterReceiver(notificationDismissReceiver) } catch (_: Exception) {}
 
-		mediaSession.apply {
+		mediaSession?.apply {
 			player.pause()
 			player.clearMediaItems()
 			player.stop()
 			player.release()
 			release()
 		}
+
+		mediaSession = null
+		notificationManager = null
+		smallIcon = null
 
 		stopForeground(STOP_FOREGROUND_REMOVE)
 		updateNotification(false)

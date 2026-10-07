@@ -771,13 +771,7 @@ class WebAppMedia(
 ) {
 
 	private lateinit var parameters: WindowManager.LayoutParams
-	private var onStartCallback: (() -> Unit) ?= null
-	private var onPlayCallback: (() -> Unit) ?= null
-	private var onPauseCallback: (() -> Unit) ?= null
-	private var onPrevCallback: (() -> Unit) ?= null
-	private var onNextCallback: (() -> Unit) ?= null
-	private var onChangedCallback: (() -> Unit) ?= null
-	private var onStopCallback: (() -> Unit) ?= null
+	private var onAllEvents: ((event: String) -> Unit) ?= null
 	private val powerManager = activity.getSystemService(POWER_SERVICE) as PowerManager
 	private var resumedActivity = false
 	private var screenOn = false
@@ -793,22 +787,17 @@ class WebAppMedia(
 		parameters = params
 	}
 
-	fun events(
-		onPlay: (() -> Unit) ?= null,
-		onPause: (() -> Unit) ?= null,
-		onPrev: (() -> Unit) ?= null,
-		onNext: (() -> Unit) ?= null,
-		onChanged: (() -> Unit) ?= null,
-		onStart: (() -> Unit) ?= null,
-		onStop: (() -> Unit) ?= null
-	) {
-		onPlay?.let { onPlayCallback = it }
-		onPause?.let { onPauseCallback = it }
-		onPrev?.let { onPrevCallback = it }
-		onNext?.let { onNextCallback = it }
-		onChanged?.let { onChangedCallback = it }
-		onStart?.let { onStartCallback = it }
-		onStop?.let { onStopCallback = it }
+	/**
+	 *	"start"   -> { "onStart".log() }
+	 *	"stop"    -> { "onStop".log() }
+	 *	"play"    -> { "onPlay".log() }
+	 *	"pause"   -> { "onPause".log() }
+	 *	"prev"    -> { "onPrev".log() }
+	 *	"next"    -> { "onNext".log() }
+	 *	"changed" -> { "onChanged".log() }
+	 */
+	fun onEvents(event: ((String?) -> Unit) ?= null) {
+		onAllEvents = event
 	}
 
 	// onStartCommand:
@@ -821,43 +810,43 @@ class WebAppMedia(
 	}
 
 	fun stop() {
-		onPauseCallback?.invoke()
-		onStopCallback?.invoke()
-		activity.stopService(Intent(activity, WebAppPlaybackService::class.java))
+		onAllEvents?.invoke("stop")
+		activity.stopService(
+			Intent(activity, WebAppPlaybackService::class.java)
+		)
 	}
 
 	fun started() {
-		onStartCallback?.invoke()
+		onAllEvents?.invoke("start")
 	}
 
 	fun play(fromService: Boolean ?= false) {
 		// Service:
-		if (fromService == true) onPlayCallback?.invoke()
+		if (fromService == true) onAllEvents?.invoke("play")
 		// Activity:
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PLAY)
 	}
 
 	fun pause(fromService: Boolean ?= false) {
-		if (fromService == true) onPauseCallback?.invoke()
+		if (fromService == true) onAllEvents?.invoke("pause")
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PAUSE)
 	}
 
 	fun prev(fromService: Boolean ?= false) {
 		if (fromService == true) {
-			onChangedCallback?.invoke()
-			onPrevCallback?.invoke()
+			onAllEvents?.invoke("changed")
+			onAllEvents?.invoke("prev")
 		}
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
 	}
 
 	fun next(fromService: Boolean ?= false) {
 		if (fromService == true) {
-			onChangedCallback?.invoke()
-			onNextCallback?.invoke()
+			onAllEvents?.invoke("changed")
+			onAllEvents?.invoke("next")
 		}
 		else sendToService(KeyEvent.KEYCODE_MEDIA_NEXT)
 	}
-
 
 	fun topResumedActivityChanged(isTopResumedActivity: Boolean) {
 		if (!Settings.canDrawOverlays(activity) || !::parameters.isInitialized) return
@@ -895,16 +884,9 @@ class WebAppMedia(
 		webview.animate()?.alpha(0f)?.setDuration(200)?.startDelay = 0
 	}
 
-
 	fun destroy() {
 		stop()
-		onPlayCallback = null
-		onPauseCallback = null
-		onPrevCallback = null
-		onNextCallback = null
-		onChangedCallback = null
-		onStartCallback = null
-		onStopCallback = null
+		onAllEvents = null
 	}
 }
 

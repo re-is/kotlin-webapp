@@ -347,6 +347,10 @@ class WebApp(
 		}
 	}
 
+	fun readAssetFile(file: String): String {
+		return activity.assets.open(file).bufferedReader().use { it.readText() }
+	}
+
 
 
 	@SuppressLint(
@@ -488,6 +492,18 @@ class WebApp(
 
 
 		var started = false
+		fun updateHeights(insets: WindowInsetsCompat) {
+			val statusHeight = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top.toFloat()
+			val navigHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom.toFloat()
+
+			javaScript.statusBar.height = if (statusHeight == 0f) 0 else (statusHeight / dpiScale).toInt()
+			javaScript.navigationBar.height = if (navigHeight == 0f) 0 else (navigHeight / dpiScale).toInt()
+		}
+
+		val updateJS = Runnable {
+			innerWebView.evaluateJavascript("window.setStatusBarAndNavigationBarHeight(${javaScript.statusBar.height}, ${javaScript.navigationBar.height});", null)
+		}
+
 		// Rendszersávok méretei:
 		ViewCompat.setOnApplyWindowInsetsListener(innerWebView) { _, insets ->
 			// Ha van magasság:
@@ -496,16 +512,7 @@ class WebApp(
 				if (!started) {
 
 					if (windowStyle == STYLE_EDGE_TO_EDGE) {
-						val statusHeight =
-							insets.getInsets(WindowInsetsCompat.Type.statusBars()).top.toFloat()
-						val navigHeight =
-							insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom.toFloat()
-
-						if (javaScript.statusBar.height == 0)
-							javaScript.statusBar.height = (statusHeight / dpiScale).toInt()
-
-						if (javaScript.navigationBar.height == 0 && navigHeight > 0f)
-							javaScript.navigationBar.height = (navigHeight / dpiScale).toInt()
+						updateHeights(insets)
 					}
 					else {
 						javaScript.statusBar.apply {
@@ -521,7 +528,7 @@ class WebApp(
 					}
 
 					/* Ez csak kísérletezéshez kell:*/
-					//bodyFunction = activity.assets.open("barHeights.js").bufferedReader().use { it.readText() }
+					//defaultAPI = readAssetFile("barHeights.js")
 
 					defaultAPI = defaultAPI
 						.replace(
@@ -529,7 +536,7 @@ class WebApp(
 							"obj = { topEnabled:${javaScript.statusBar.enabled}, btmEnabled:${javaScript.navigationBar.enabled}, topHeight:${javaScript.statusBar.height}, btmHeight:${javaScript.navigationBar.height}, topBlur:${javaScript.statusBar.blur}, btmBlur:${javaScript.navigationBar.blur} }"
 						)
 						.replace(
-							"edgeToEdge = false",
+							"edgeToEdge = true",
 							"edgeToEdge = ${(windowStyle == STYLE_EDGE_TO_EDGE)}"
 						)
 
@@ -544,6 +551,13 @@ class WebApp(
 							height = display.height()
 						}
 						activity.windowManager.updateViewLayout(innerWebView, webViewParams)
+					}
+					updateHeights(insets)
+					// Magasságok frissítése és újraküldése
+					// Az onAndroid(topH, btmH) is lefut !
+					if (windowStyle == STYLE_EDGE_TO_EDGE) {
+						MAIN_LOOPER.removeCallbacks(updateJS)
+						MAIN_LOOPER.postDelayed(updateJS, 100)
 					}
 				}
 			}
@@ -903,6 +917,7 @@ class WebAppPlaybackService : MediaSessionService() {
 	private var mediaSession: MediaSession ?= null
 	private var notificationManager: NotificationManager ?= null
 	private var smallIcon: IconCompat ?= null
+	private var listener: Player.Listener ?= null
 
 	private val dismissedAction = "dismissed"
 	private val notificationId = 43234
@@ -1054,6 +1069,18 @@ class WebAppPlaybackService : MediaSessionService() {
 		notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
 		notificationManager?.createNotificationChannel(channel)
 
+		listener = object : Player.Listener {
+			override fun onIsPlayingChanged(isPlaying: Boolean) {
+				super.onIsPlayingChanged(isPlaying)
+				// Váltáskor ez már nem fut le #34534535
+				if (!loading) {
+					updateNotification(true)
+					if (isPlaying) sendToWebApp(WebApp.SERVICE_MEDIA_PLAY)
+					else sendToWebApp(WebApp.SERVICE_MEDIA_PAUSE)
+				}
+			}
+		}
+
 		val attr = AudioAttributes.Builder().run {
 			setContentType(AUDIO_CONTENT_TYPE_MUSIC)
 			setUsage(USAGE_MEDIA)
@@ -1067,17 +1094,7 @@ class WebAppPlaybackService : MediaSessionService() {
 			build()
 		}
 
-		player.addListener(object : Player.Listener {
-			override fun onIsPlayingChanged(isPlaying: Boolean) {
-				super.onIsPlayingChanged(isPlaying)
-				// Váltáskor ez már nem fut le #34534535
-				if (!loading) {
-					updateNotification(true)
-					if (isPlaying) sendToWebApp(WebApp.SERVICE_MEDIA_PLAY)
-					else sendToWebApp(WebApp.SERVICE_MEDIA_PAUSE)
-				}
-			}
-		})
+		player.addListener(listener!!)
 
 		mediaSession = MediaSession.Builder(this, player).run {
 			setId("WebAppSession:$packageName")
@@ -1132,13 +1149,17 @@ class WebAppPlaybackService : MediaSessionService() {
 		try { unregisterReceiver(notificationDismissReceiver) } catch (_: Exception) {}
 
 		mediaSession?.apply {
-			player.pause()
-			player.clearMediaItems()
-			player.stop()
-			player.release()
+			player.apply {
+				removeListener(listener!!)
+				pause()
+				clearMediaItems()
+				stop()
+				release()
+			}
 			release()
 		}
 
+		listener = null
 		mediaSession = null
 		notificationManager = null
 		smallIcon = null
@@ -1158,12 +1179,12 @@ class WebAppPlaybackService : MediaSessionService() {
 
 
 private var defaultAPI = """
-(function(wnd, doc, edgeToEdge = false) {
+(function(wnd, doc, edgeToEdge = true) {
 
 	if (wnd.newWebView) return;
 	wnd.newWebView = 1;
 
-	Object.defineProperty(Object.prototype, 'params', {
+	/*Object.defineProperty(Object.prototype, 'params', {
 		value: function(obj) {
 			if (obj && typeof obj === 'object') {
 				for (const key in obj) {
@@ -1187,56 +1208,56 @@ private var defaultAPI = """
 		},
 		writable: true,
 		configurable: true
-	});
+	});*/
 
-	const
-		obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true },
-		meta = doc.createElement('meta').params({
-			name: 'viewport',
-			content: 'width=device-width, initial-scale=1.0, user-scalable=no'
-		});
+	const obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true };
+	const meta = doc.createElement('meta');
+
+	meta.name = 'viewport';
+	meta.content = 'width=device-width, initial-scale=1.0, user-scalable=no';
 
 	doc.head.appendChild(meta);
 
+	wnd.addEventListener('touchmove', (e) => {
+		if (e.touches[0].clientY > (wnd.screen.height * 0.93)) e.preventDefault();
+	}, { passive: false });
+
 	if (edgeToEdge) {
 
-		let cssText = (
-			'body {' +
-				(obj.topEnabled ? ('padding-top: ' + obj.topHeight + 'px;') : '') +
-				(obj.btmEnabled ? ('padding-bottom: ' + obj.btmHeight + 'px;') : '') +
-			'} body::before {' +
+		wnd.setStatusBarAndNavigationBarHeight = function(topH, btmH) {
+			let gradient = 'linear-gradient(to bottom,';
+
+			if (obj.topEnabled && obj.topBlur) gradient += ('black ' + (topH * 0.8) + 'px, transparent ' + topH + 'px');
+
+			if (obj.topEnabled && obj.topBlur && obj.btmEnabled && obj.btmBlur) gradient += ',';
+
+			if (obj.btmEnabled && obj.btmBlur) gradient += ('transparent calc(100% - ' + btmH + 'px), black calc(100% - ' + (btmH * 0.6) + 'px)');
+
+			gradient += ')';
+
+			doc.getElementById('top-bottom-blurred-element').style.maskImage = gradient;
+
+			if (typeof onAndroid === 'function') onAndroid(topH, btmH);
+		};
+
+		if (obj.topEnabled || obj.btmEnabled) {
+			const css = (
 				'position: fixed;' +
 				'content: "";' +
 				'inset: 0;' +
 				'pointer-events: none;' +
 				'backdrop-filter: blur(10px);' +
-				'z-index: 10000;' +
-				'mask-image: linear-gradient(to bottom,');
+				'z-index: 10000;');
 
-		if (obj.topEnabled && obj.topBlur) cssText += ('black ' + (obj.topHeight * 0.8) + 'px, transparent ' + obj.topHeight + 'px');
+			const blurredElem = doc.createElement('div');
 
-		if (obj.topEnabled && obj.topBlur && obj.btmEnabled && obj.btmBlur) cssText += ',';
+			blurredElem.id = 'top-bottom-blurred-element';
+			blurredElem.setAttribute('style', css);
 
-		if (obj.btmEnabled && obj.btmBlur) cssText += ('transparent calc(100% - ' + obj.btmHeight + 'px), black calc(100% - ' + (obj.btmHeight * 0.6) + 'px)');
-
-		cssText += ')}';
-
-		if (obj.topEnabled || obj.btmEnabled) {
-			const style = doc.createElement('style').params({
-				textContent: cssText
-			});
-			doc.head.appendChild(style);
+			doc.body.appendChild(blurredElem);
+			wnd.setStatusBarAndNavigationBarHeight(obj.topHeight, obj.btmHeight);
 		}
-
-		wnd.addEventListener('touchmove', (e) => {
-			if (e.touches[0].clientY > (wnd.screen.height * 0.93)) e.preventDefault();
-		}, { passive: false });
-
-		wnd.statusBarHeight = obj.topHeight;
-		wnd.navigationBarHeight = obj.btmHeight;
 	}
-
-	if (typeof onAndroid === 'function') onAndroid();
 
 })(window, document);
 """.trimIndent()

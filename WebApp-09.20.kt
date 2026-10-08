@@ -173,6 +173,7 @@ class WebApp(
 
 		/**
 		 *	// Az onStart után, az onLoad előtt adja hozzá !
+		 *	// Ez után fut az androidEdgeToEdge(top, bottom);
 		 */
 		var addAPI = ""
 
@@ -300,11 +301,11 @@ class WebApp(
 	private lateinit var webViewParams: WindowManager.LayoutParams
 	lateinit var innerWebView: WebView
 		private set
-	lateinit var javaScript : JsInterface
+	lateinit var javaScript: JsInterface
 		private set
-	lateinit var bluetooth : BlueTooth
+	lateinit var bluetooth: BlueTooth
 		private set
-	lateinit var media : WebAppMedia
+	lateinit var media: WebAppMedia
 		private set
 
 	// Instance -------------------------------->
@@ -660,7 +661,7 @@ class WebApp(
 						edgeToEdgeBarColors()
 					}
 					wv.post {
-						wv.evaluateJavascript(defaultAPI + javaScript.addAPI) {
+						wv.evaluateJavascript(javaScript.addAPI + defaultAPI) {
 							onLoad?.invoke(wv, url)
 						}
 					}
@@ -882,7 +883,7 @@ class WebAppMedia(
 			if (resumedActivity) {
 				// Zárt képernyő utáni visszatéréskor:
 				if (!screenOn) webview.alpha = 1f
-				else webview.animate()?.alpha(1f)?.setDuration(100)?.startDelay = 300
+				else webview.animate()?.alpha(1f)?.setDuration(200)?.startDelay = 200
 			}
 			else resumedActivity = true
 			return
@@ -1094,7 +1095,7 @@ class WebAppPlaybackService : MediaSessionService() {
 			build()
 		}
 
-		player.addListener(listener!!)
+		listener?.let(player::addListener)
 
 		mediaSession = MediaSession.Builder(this, player).run {
 			setId("WebAppSession:$packageName")
@@ -1150,7 +1151,7 @@ class WebAppPlaybackService : MediaSessionService() {
 
 		mediaSession?.apply {
 			player.apply {
-				removeListener(listener!!)
+				listener?.let(player::removeListener)
 				pause()
 				clearMediaItems()
 				stop()
@@ -1159,14 +1160,14 @@ class WebAppPlaybackService : MediaSessionService() {
 			release()
 		}
 
+		stopForeground(STOP_FOREGROUND_REMOVE)
+		updateNotification(false)
+		stopSelf()
+
 		listener = null
 		mediaSession = null
 		notificationManager = null
 		smallIcon = null
-
-		stopForeground(STOP_FOREGROUND_REMOVE)
-		updateNotification(false)
-		stopSelf()
 
 		"MediaService, onDestroy".log()
 		super.onDestroy()
@@ -1185,11 +1186,11 @@ private var defaultAPI = """
 	wnd.newWebView = 1;
 
 	/*Object.defineProperty(Object.prototype, 'params', {
-		value: function(obj) {
-			if (obj && typeof obj === 'object') {
-				for (const key in obj) {
-					if (Object.prototype.hasOwnProperty.call(obj, key)) {
-						this[key] = obj[key];
+		value: function(object) {
+			if (object && typeof object === 'object') {
+				for (const key in object) {
+					if (Object.prototype.hasOwnProperty.call(object, key)) {
+						this[key] = object[key];
 					}
 				}
 			}
@@ -1210,19 +1211,20 @@ private var defaultAPI = """
 		configurable: true
 	});*/
 
-	const obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true };
 	const meta = doc.createElement('meta');
-
 	meta.name = 'viewport';
 	meta.content = 'width=device-width, initial-scale=1.0, user-scalable=no';
-
 	doc.head.appendChild(meta);
+
 
 	wnd.addEventListener('touchmove', (e) => {
 		if (e.touches[0].clientY > (wnd.screen.height * 0.93)) e.preventDefault();
 	}, { passive: false });
 
+
 	if (edgeToEdge) {
+
+		const obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true };
 
 		wnd.setStatusBarAndNavigationBarHeight = function(topH, btmH) {
 			let gradient = 'linear-gradient(to bottom,';
@@ -1235,9 +1237,9 @@ private var defaultAPI = """
 
 			gradient += ')';
 
-			doc.getElementById('top-bottom-blurred-element').style.maskImage = gradient;
+			if (obj.topEnabled || obj.btmEnabled) doc.getElementById('top-bottom-blurred-element').style.maskImage = gradient;
 
-			if (typeof onAndroid === 'function') onAndroid(topH, btmH);
+			if (typeof androidEdgeToEdge === 'function') androidEdgeToEdge(topH, btmH);
 		};
 
 		if (obj.topEnabled || obj.btmEnabled) {

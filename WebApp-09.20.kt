@@ -169,7 +169,7 @@ class WebApp(
 ) {
 
 	class JsClass(private val webview: WebView, private val dpi: Float) {
-		private var commandCallback: ((id: String, params: List<String>) -> Unit) ?= null
+		private var commandCallback: ((id: String, params: List<String>) -> Unit)? = null
 
 		val javascriptInterface = object {
 			@JavascriptInterface
@@ -244,9 +244,9 @@ class WebApp(
 
 
 	class BlueTooth(private val act: ComponentActivity) {
-		private var bluetoothEventCallback: ((String) -> Unit) ?= null
+		private var bluetoothEventCallback: ((String) -> Unit)? = null
 
-		fun connectedName(callback: ((name: String) -> Unit) ?= null) {
+		fun connectedName(callback: ((name: String) -> Unit)? = null) {
 			callback?.let { bluetoothEventCallback = it }
 
 			val bluetoothManager = act.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
@@ -646,26 +646,24 @@ class WebApp(
 				super.onPageStarted(view, url, favicon)
 				if (!loaded) return
 				loaded = false
-				view?.alpha = 0f
 				view?.let { wv ->
-					wv.post {
-						onStart?.invoke(wv, url)
-					}
+					wv.alpha = 0f
+					onStart?.invoke(wv, url)
 				}
 			}
 
 			override fun onPageFinished(view: WebView?, url: String?) {
 				if (loaded) return
 				loaded = true
-				view?.animate()?.alpha(1f)?.setDuration(600)?.startDelay = 0
 				view?.let { wv ->
-					if (windowStyle == STYLE_EDGE_TO_EDGE) {
-						edgeToEdgeBarColors()
-					}
-					wv.post {
-						wv.evaluateJavascript(javaScript.addAPI + defaultAPI) {
-							onLoad?.invoke(wv, url)
-						}
+					// API küldés:
+					wv.evaluateJavascript(javaScript.addAPI + defaultAPI) {
+						// OnLoad:
+						onLoad?.invoke(wv, url)
+						// Bar színek:
+						if (windowStyle == STYLE_EDGE_TO_EDGE) edgeToEdgeBarColors()
+						// Fade-in
+						wv.animate().alpha(1f).setDuration(600).startDelay = 0
 					}
 				}
 			}
@@ -680,9 +678,9 @@ class WebApp(
 
 			override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
 				if (request?.isForMainFrame == true) {
-					view?.stopLoading()
-					view?.let {
-						onError?.invoke(it)
+					view?.let { wv ->
+						wv.stopLoading()
+						onError?.invoke(wv)
 					}
 				}
 			}
@@ -780,15 +778,23 @@ class WebApp(
 
 
 
-
+object MediaEvents {
+	const val START		= 0
+	const val PLAY		= 1
+	const val PAUSE		= 2
+	const val PREV		= 3
+	const val NEXT		= 4
+	const val CHANGED	= 5
+	const val STOP		= 6
+}
 
 class WebAppMedia(
 	private val activity: ComponentActivity,
 	private val webview: WebView
 ) {
 
-	private lateinit var parameters: WindowManager.LayoutParams
-	private var onEventsCallback: ((event: String) -> Unit) ?= null
+	private var parameters: WindowManager.LayoutParams? = null
+	private var onEventsCallback: ((event: Int) -> Unit)? = null
 	private val powerManager = activity.getSystemService(POWER_SERVICE) as PowerManager
 	private var resumedActivity = false
 	private var screenOn = false
@@ -805,15 +811,15 @@ class WebAppMedia(
 	}
 
 	/**
-	 *	"start"   -> { "onStart".log() }
-	 *	"stop"    -> { "onStop".log() }
-	 *	"play"    -> { "onPlay".log() }
-	 *	"pause"   -> { "onPause".log() }
-	 *	"prev"    -> { "onPrev".log() }
-	 *	"next"    -> { "onNext".log() }
-	 *	"changed" -> { "onChanged".log() }
+	 *	MediaEvents.START   -> { "onStart".log() }
+	 *	MediaEvents.PLAY    -> { "onPlay".log() }
+	 *	MediaEvents.PAUSE   -> { "onPause".log() }
+	 *	MediaEvents.PREV    -> { "onPrev".log() }
+	 *	MediaEvents.NEXT    -> { "onNext".log() }
+	 *	MediaEvents.CHANGED -> { "onChanged".log() }
+	 *	MediaEvents.STOP    -> { "onStop".log() }
 	 */
-	fun onEvents(callback: (event: String) -> Unit) {
+	fun onEvents(callback: (event: Int) -> Unit) {
 		onEventsCallback = callback
 	}
 
@@ -827,9 +833,9 @@ class WebAppMedia(
 	}
 
 	fun stop() {
-		onEventsCallback?.invoke("stop")
+		onEventsCallback?.invoke(MediaEvents.STOP)
 		// Muszáj ez, mert a szerviz újra kiküldheti az értesítést, a pause miatt ! #3452453443
-		WebAppPlaybackService.destroyed = true
+		WebAppPlaybackService.stopped = true
 		// Utána leállítjuk a Service-t:
 		activity.stopService(
 			Intent(activity, WebAppPlaybackService::class.java)
@@ -837,49 +843,49 @@ class WebAppMedia(
 	}
 
 	fun started() {
-		onEventsCallback?.invoke("start")
+		onEventsCallback?.invoke(MediaEvents.START)
 	}
 
-	fun play(fromService: Boolean ?= false) {
+	fun play(fromService: Boolean? = false) {
 		// Service:
-		if (fromService == true) onEventsCallback?.invoke("play")
+		if (fromService == true) onEventsCallback?.invoke(MediaEvents.PLAY)
 		// Activity:
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PLAY)
 	}
 
-	fun pause(fromService: Boolean ?= false) {
-		if (fromService == true) onEventsCallback?.invoke("pause")
+	fun pause(fromService: Boolean? = false) {
+		if (fromService == true) onEventsCallback?.invoke(MediaEvents.PAUSE)
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PAUSE)
 	}
 
-	fun prev(fromService: Boolean ?= false) {
+	fun prev(fromService: Boolean? = false) {
 		if (fromService == true) {
-			onEventsCallback?.invoke("changed")
-			onEventsCallback?.invoke("prev")
+			onEventsCallback?.invoke(MediaEvents.CHANGED)
+			onEventsCallback?.invoke(MediaEvents.PREV)
 		}
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
 	}
 
-	fun next(fromService: Boolean ?= false) {
+	fun next(fromService: Boolean? = false) {
 		if (fromService == true) {
-			onEventsCallback?.invoke("changed")
-			onEventsCallback?.invoke("next")
+			onEventsCallback?.invoke(MediaEvents.CHANGED)
+			onEventsCallback?.invoke(MediaEvents.NEXT)
 		}
 		else sendToService(KeyEvent.KEYCODE_MEDIA_NEXT)
 	}
 
 	fun topResumedActivityChanged(isTopResumedActivity: Boolean) {
-		if (!Settings.canDrawOverlays(activity) || !::parameters.isInitialized) return
+		if (!Settings.canDrawOverlays(activity) || parameters == null) return
 		// onResume:
 		if (isTopResumedActivity) {
 			val display = activity.windowManager.currentWindowMetrics.bounds
-			parameters.apply {
+			parameters?.let { params ->
 				// Elforgatás a háttérben miatt:
-				width = display.width()
-				height = display.height()
-				flags = parameters.flags and (
-					WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-					WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+				params.width = display.width()
+				params.height = display.height()
+				params.flags = params.flags and (
+						WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+						WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
 				).inv()
 			}
 			activity.windowManager.updateViewLayout(webview, parameters)
@@ -896,9 +902,11 @@ class WebAppMedia(
 		// OnPause:
 		screenOn = powerManager.isInteractive
 
-		parameters.flags = parameters.flags or
-				WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-				WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+		parameters?.let { params ->
+			params.flags = params.flags or
+					WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+					WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+		}
 
 		activity.windowManager.updateViewLayout(webview, parameters)
 		webview.animate()?.alpha(0f)?.setDuration(200)?.startDelay = 0
@@ -907,6 +915,7 @@ class WebAppMedia(
 	fun destroy() {
 		stop()
 		onEventsCallback = null
+		parameters = null
 	}
 }
 
@@ -920,10 +929,10 @@ class WebAppMedia(
 
 class WebAppPlaybackService : MediaSessionService() {
 
-	private var mediaSession: MediaSession ?= null
-	private var notificationManager: NotificationManager ?= null
-	private var smallIcon: IconCompat ?= null
-	private var listener: Player.Listener ?= null
+	private var mediaSession: MediaSession? = null
+	private var notificationManager: NotificationManager? = null
+	private var smallIcon: IconCompat? = null
+	private var listener: Player.Listener? = null
 
 	private val dismissedAction = "dismissed"
 	private val notificationId = 43234
@@ -1078,9 +1087,9 @@ class WebAppPlaybackService : MediaSessionService() {
 		listener = object : Player.Listener {
 			override fun onIsPlayingChanged(isPlaying: Boolean) {
 				super.onIsPlayingChanged(isPlaying)
-				// destroyed: #3452453443
+				// stopped: #3452453443
 				// Váltáskor ez már nem fut le: #34534535
-				if (!destroyed && !loading) {
+				if (!stopped && !loading) {
 					updateNotification(true)
 					if (isPlaying) sendToWebApp(WebApp.SERVICE_MEDIA_PLAY)
 					else sendToWebApp(WebApp.SERVICE_MEDIA_PAUSE)
@@ -1178,7 +1187,7 @@ class WebAppPlaybackService : MediaSessionService() {
 	}
 
 	companion object {
-		var destroyed = false
+		var stopped = false
 	}
 }
 

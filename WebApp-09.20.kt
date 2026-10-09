@@ -168,8 +168,20 @@ class WebApp(
 	private var windowStyle: Int = STYLE_NORMAL
 ) {
 
-	class JsInterface(private val webview: WebView, private val dpi: Float) {
+	class JsClass(private val webview: WebView, private val dpi: Float) {
 		private var commandCallback: ((id: String, params: List<String>) -> Unit) ?= null
+
+		val javascriptInterface = object {
+			@JavascriptInterface
+			fun command(id: String, value: String) {
+				MAIN_LOOPER.post {
+					val params = value.split(",")
+						.map { it.trim() }
+						.filter { it.isNotEmpty() }
+					commandCallback?.invoke(id, params)
+				}
+			}
+		}
 
 		/**
 		 *	// Az onStart után, az onLoad előtt adja hozzá !
@@ -181,18 +193,8 @@ class WebApp(
 		 *	//JavaScript:
 		 *	window.android.command('my', '433, true');
 		 */
-		fun onCommand(callback: ((id: String, params: List<String>) -> Unit)) {
+		fun onCommand(callback: (id: String, params: List<String>) -> Unit) {
 			commandCallback = callback
-		}
-
-		@JavascriptInterface
-		fun command(id: String, value: String) {
-			MAIN_LOOPER.post {
-				val params = value.split(",")
-					.map { it.trim() }
-					.filter { it.isNotEmpty() }
-				commandCallback?.invoke(id, params)
-			}
 		}
 
 		/**
@@ -301,7 +303,7 @@ class WebApp(
 	private lateinit var webViewParams: WindowManager.LayoutParams
 	lateinit var innerWebView: WebView
 		private set
-	lateinit var javaScript: JsInterface
+	lateinit var javaScript: JsClass
 		private set
 	lateinit var bluetooth: BlueTooth
 		private set
@@ -404,9 +406,9 @@ class WebApp(
 
 		// Osztályok:
 		bluetooth = BlueTooth(activity)
-		javaScript = JsInterface(innerWebView, dpiScale)
+		javaScript = JsClass(innerWebView, dpiScale)
 		media = WebAppMedia(activity, innerWebView)
-		innerWebView.addJavascriptInterface(javaScript, "android")
+		innerWebView.addJavascriptInterface(javaScript.javascriptInterface, "android")
 
 		// Bluetooth:
 		if (ContextCompat.checkSelfPermission(activity, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {

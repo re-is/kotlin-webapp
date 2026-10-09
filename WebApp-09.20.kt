@@ -786,7 +786,7 @@ class WebAppMedia(
 ) {
 
 	private lateinit var parameters: WindowManager.LayoutParams
-	private var onAllEvents: ((event: String) -> Unit) ?= null
+	private var onEventsCallback: ((event: String) -> Unit) ?= null
 	private val powerManager = activity.getSystemService(POWER_SERVICE) as PowerManager
 	private var resumedActivity = false
 	private var screenOn = false
@@ -811,8 +811,8 @@ class WebAppMedia(
 	 *	"next"    -> { "onNext".log() }
 	 *	"changed" -> { "onChanged".log() }
 	 */
-	fun onEvents(event: ((String?) -> Unit) ?= null) {
-		onAllEvents = event
+	fun onEvents(callback: (event: String) -> Unit) {
+		onEventsCallback = callback
 	}
 
 	// onStartCommand:
@@ -825,40 +825,43 @@ class WebAppMedia(
 	}
 
 	fun stop() {
-		onAllEvents?.invoke("stop")
+		onEventsCallback?.invoke("stop")
+		// Muszáj ez, mert a szerviz újra kiküldheti az értesítést, a pause miatt ! #3452453443
+		WebAppPlaybackService.destroyed = true
+		// Utána leállítjuk a Service-t:
 		activity.stopService(
 			Intent(activity, WebAppPlaybackService::class.java)
 		)
 	}
 
 	fun started() {
-		onAllEvents?.invoke("start")
+		onEventsCallback?.invoke("start")
 	}
 
 	fun play(fromService: Boolean ?= false) {
 		// Service:
-		if (fromService == true) onAllEvents?.invoke("play")
+		if (fromService == true) onEventsCallback?.invoke("play")
 		// Activity:
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PLAY)
 	}
 
 	fun pause(fromService: Boolean ?= false) {
-		if (fromService == true) onAllEvents?.invoke("pause")
+		if (fromService == true) onEventsCallback?.invoke("pause")
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PAUSE)
 	}
 
 	fun prev(fromService: Boolean ?= false) {
 		if (fromService == true) {
-			onAllEvents?.invoke("changed")
-			onAllEvents?.invoke("prev")
+			onEventsCallback?.invoke("changed")
+			onEventsCallback?.invoke("prev")
 		}
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
 	}
 
 	fun next(fromService: Boolean ?= false) {
 		if (fromService == true) {
-			onAllEvents?.invoke("changed")
-			onAllEvents?.invoke("next")
+			onEventsCallback?.invoke("changed")
+			onEventsCallback?.invoke("next")
 		}
 		else sendToService(KeyEvent.KEYCODE_MEDIA_NEXT)
 	}
@@ -901,7 +904,7 @@ class WebAppMedia(
 
 	fun destroy() {
 		stop()
-		onAllEvents = null
+		onEventsCallback = null
 	}
 }
 
@@ -1073,8 +1076,9 @@ class WebAppPlaybackService : MediaSessionService() {
 		listener = object : Player.Listener {
 			override fun onIsPlayingChanged(isPlaying: Boolean) {
 				super.onIsPlayingChanged(isPlaying)
-				// Váltáskor ez már nem fut le #34534535
-				if (!loading) {
+				// destroyed: #3452453443
+				// Váltáskor ez már nem fut le: #34534535
+				if (!destroyed && !loading) {
 					updateNotification(true)
 					if (isPlaying) sendToWebApp(WebApp.SERVICE_MEDIA_PLAY)
 					else sendToWebApp(WebApp.SERVICE_MEDIA_PAUSE)
@@ -1160,9 +1164,7 @@ class WebAppPlaybackService : MediaSessionService() {
 			release()
 		}
 
-		stopForeground(STOP_FOREGROUND_REMOVE)
 		updateNotification(false)
-		stopSelf()
 
 		listener = null
 		mediaSession = null
@@ -1171,6 +1173,10 @@ class WebAppPlaybackService : MediaSessionService() {
 
 		"MediaService, onDestroy".log()
 		super.onDestroy()
+	}
+
+	companion object {
+		var destroyed = false
 	}
 }
 

@@ -823,7 +823,13 @@ class WebAppMedia(
 		onEventsCallback = callback
 	}
 
-	// onStartCommand:
+	// Ez csak a receiverből fut:
+	fun started() {
+		onEventsCallback?.invoke(MediaEvents.START)
+	}
+
+
+	// Service indítása, onCreate() x1 + onStartCommand() mindig
 	fun start(title: String) {
 		activity.startForegroundService(
 			Intent(activity, WebAppPlaybackService::class.java).apply {
@@ -832,6 +838,7 @@ class WebAppMedia(
 		)
 	}
 
+	// Leállítás, onDestroy()
 	fun stop() {
 		onEventsCallback?.invoke(MediaEvents.STOP)
 		// Muszáj ez, mert a szerviz újra kiküldheti az értesítést, a pause miatt ! #3452453443
@@ -840,10 +847,6 @@ class WebAppMedia(
 		activity.stopService(
 			Intent(activity, WebAppPlaybackService::class.java)
 		)
-	}
-
-	fun started() {
-		onEventsCallback?.invoke(MediaEvents.START)
 	}
 
 	fun play(fromService: Boolean? = false) {
@@ -874,7 +877,18 @@ class WebAppMedia(
 		else sendToService(KeyEvent.KEYCODE_MEDIA_NEXT)
 	}
 
-	fun topResumedActivityChanged(isTopResumedActivity: Boolean) {
+	fun changeTo(state: String) {
+		when (state) {
+			"play"	-> sendToService(KeyEvent.KEYCODE_MEDIA_PLAY)
+			"pause"	-> sendToService(KeyEvent.KEYCODE_MEDIA_PAUSE)
+			"prev"	-> sendToService(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+			"next"	-> sendToService(KeyEvent.KEYCODE_MEDIA_NEXT)
+			"stop"	-> stop()
+		}
+	}
+
+
+	fun topResumedActivityChange(isTopResumedActivity: Boolean) {
 		if (!Settings.canDrawOverlays(activity) || parameters == null) return
 		// onResume:
 		if (isTopResumedActivity) {
@@ -940,6 +954,7 @@ class WebAppPlaybackService : MediaSessionService() {
 	private var sendedNotify = false
 	private var activeColor = 0
 	private val inactiveColor = Color.parseColor("#999999")
+	private var played = false
 
 	private fun sendToWebApp(action: String) {
 		sendBroadcast(Intent(action).apply {
@@ -961,9 +976,9 @@ class WebAppPlaybackService : MediaSessionService() {
 	private fun customNotification(): Notification {
 		val customLayout = RemoteViews(packageName, R.layout.notification).apply {
 
-			mediaSession?.player?.let {
-				setViewVisibility(R.id.media_play, if (it.isPlaying) View.GONE else View.VISIBLE)
-				setViewVisibility(R.id.media_pause, if (it.isPlaying) View.VISIBLE else View.GONE)
+			mediaSession?.player?.let { player ->
+				setViewVisibility(R.id.media_play, if (player.isPlaying) View.GONE else View.VISIBLE)
+				setViewVisibility(R.id.media_pause, if (player.isPlaying) View.VISIBLE else View.GONE)
 			}
 
 			if (state == ACTIVE) {
@@ -1017,7 +1032,10 @@ class WebAppPlaybackService : MediaSessionService() {
 					MAIN_LOOPER.removeCallbacks(updateNotificationRunnable)
 					MAIN_LOOPER.postDelayed(updateNotificationRunnable, 300)
 				}
-			} else cancel(notificationId)
+			} else {
+				MAIN_LOOPER.removeCallbacks(updateNotificationRunnable)
+				cancel(notificationId)
+			}
 		}
 	}
 
@@ -1028,7 +1046,7 @@ class WebAppPlaybackService : MediaSessionService() {
 	// Elhúzáskor visszaállítás, mert az setOngoing nem működik !
 	private val notificationDismissReceiver = object : BroadcastReceiver() {
 		override fun onReceive(context: Context?, intent: Intent?) {
-			updateNotification(true)
+			if (state >= STARTED && played) updateNotification(true)
 		}
 	}
 
@@ -1106,12 +1124,16 @@ class WebAppPlaybackService : MediaSessionService() {
 				super.onIsPlayingChanged(isPlaying)
 				// STOPPED + CHANGED #3452453443
 				if (state < STARTED) return
+				// ACTIVE #34534535
+				if (state == ACTIVE) {
+					if (isPlaying)	sendToWebApp(WebApp.SERVICE_MEDIA_PLAY)
+					else			sendToWebApp(WebApp.SERVICE_MEDIA_PAUSE)
+				}
 				// Ha elindult a service, várakozás a játszásra:
-				if (state == STARTED && isPlaying) state = ACTIVE
-				// STARTED + ACTIVE #34534535
+				else if (isPlaying) state = ACTIVE
+				// STARTED + ACTIVE
+				played = isPlaying
 				updateNotification(true)
-				if (isPlaying)	sendToWebApp(WebApp.SERVICE_MEDIA_PLAY)
-				else			sendToWebApp(WebApp.SERVICE_MEDIA_PAUSE)
 			}
 		}
 
@@ -1151,6 +1173,8 @@ class WebAppPlaybackService : MediaSessionService() {
 
 		val mediaTitle = intent?.getStringExtra("EXTRA_MEDIA_TITLE") ?: return START_STICKY
 
+		state = STARTED
+
 		val item = MediaItem.Builder().run {
 			setMediaId("noname")
 			setUri("asset:///silent.mp3")
@@ -1167,8 +1191,6 @@ class WebAppPlaybackService : MediaSessionService() {
 			playWhenReady = true
 			prepare()
 		}
-
-		state = STARTED
 
 		sendToWebApp(WebApp.SERVICE_MEDIA_START)
 

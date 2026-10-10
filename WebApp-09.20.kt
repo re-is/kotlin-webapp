@@ -835,7 +835,7 @@ class WebAppMedia(
 	fun stop() {
 		onEventsCallback?.invoke(MediaEvents.STOP)
 		// Muszáj ez, mert a szerviz újra kiküldheti az értesítést, a pause miatt ! #3452453443
-		WebAppPlaybackService.stopped = true
+		WebAppPlaybackService.state = WebAppPlaybackService.STOPPED
 		// Utána leállítjuk a Service-t:
 		activity.stopService(
 			Intent(activity, WebAppPlaybackService::class.java)
@@ -937,9 +937,9 @@ class WebAppPlaybackService : MediaSessionService() {
 	private val dismissedAction = "dismissed"
 	private val notificationId = 43234
 	private val channelId = "WebAppMediaPlayback"
-	private var loading = false
-	private val inactiveColor = Color.parseColor("#999999")
+	private var sendedNotify = false
 	private var activeColor = 0
+	private val inactiveColor = Color.parseColor("#999999")
 
 	private fun sendToWebApp(action: String) {
 		sendBroadcast(Intent(action).apply {
@@ -958,7 +958,7 @@ class WebAppPlaybackService : MediaSessionService() {
 	override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {}
 
 	// Saját értesítés:
-	private fun buildNotification(): Notification {
+	private fun customNotification(): Notification {
 		val customLayout = RemoteViews(packageName, R.layout.notification).apply {
 
 			mediaSession?.player?.let {
@@ -966,7 +966,7 @@ class WebAppPlaybackService : MediaSessionService() {
 				setViewVisibility(R.id.media_pause, if (it.isPlaying) View.VISIBLE else View.GONE)
 			}
 
-			if (!loading) {
+			if (state == ACTIVE) {
 				setOnClickPendingIntent(R.id.media_play, sendToService(KeyEvent.KEYCODE_MEDIA_PLAY))
 				setOnClickPendingIntent(R.id.media_pause, sendToService(KeyEvent.KEYCODE_MEDIA_PAUSE))
 				setOnClickPendingIntent(R.id.media_prev, sendToService(KeyEvent.KEYCODE_MEDIA_PREVIOUS))
@@ -985,7 +985,7 @@ class WebAppPlaybackService : MediaSessionService() {
 		}
 
 		// Elhúzáskor:
-		val dismissPendingIntent = PendingIntent.getBroadcast(this, 100,
+		val setOngoingAlternative = PendingIntent.getBroadcast(this, 100,
 			Intent(dismissedAction).apply { setPackage(packageName) },
 			PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 		)
@@ -995,8 +995,8 @@ class WebAppPlaybackService : MediaSessionService() {
 			setCustomContentView(customLayout)
 			setCustomBigContentView(customLayout)
 			setStyle(NotificationCompat.DecoratedCustomViewStyle())
-			setDeleteIntent(dismissPendingIntent)
-			setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+			setDeleteIntent(setOngoingAlternative)				// setOngoing alternatíva
+			setVisibility(NotificationCompat.VISIBILITY_PUBLIC)	// Záróképernyőn is teljes vezérlés
 			setSilent(true)
 			build()
 		}
@@ -1004,8 +1004,25 @@ class WebAppPlaybackService : MediaSessionService() {
 
 	private fun updateNotification(show: Boolean) {
 		notificationManager?.apply {
-			if (show) notify(notificationId, buildNotification()) else cancel(notificationId)
+			if (show) {
+				if (!sendedNotify) {
+					MAIN_LOOPER.removeCallbacks(updateNotificationRunnable)
+					notify(notificationId, customNotification())
+					MAIN_LOOPER.postDelayed({
+						sendedNotify = false
+					}, 300)
+					sendedNotify = true
+				}
+				else {
+					MAIN_LOOPER.removeCallbacks(updateNotificationRunnable)
+					MAIN_LOOPER.postDelayed(updateNotificationRunnable, 300)
+				}
+			} else cancel(notificationId)
 		}
+	}
+
+	private val updateNotificationRunnable = Runnable {
+		updateNotification(true)
 	}
 
 	// Elhúzáskor visszaállítás, mert az setOngoing nem működik !
@@ -1023,28 +1040,28 @@ class WebAppPlaybackService : MediaSessionService() {
 			intent: Intent
 		): Boolean {
 			intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)?.let {
-				if (it.action == KeyEvent.ACTION_DOWN) {
+				if (it.action == KeyEvent.ACTION_DOWN && state == ACTIVE) {
 					// Events:
 					when (it.keyCode) {
 						KeyEvent.KEYCODE_MEDIA_PLAY -> {
-							if (!loading) mediaSession?.player?.play()
+							mediaSession?.player?.play()
 							return true
 						}
 						KeyEvent.KEYCODE_MEDIA_PAUSE -> {
-							if (!loading) mediaSession?.player?.pause()
+							mediaSession?.player?.pause()
 							return true
 						}
 						KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
-							if (loading) return true
-							loading = true					// 1 #34534535
-							mediaSession?.player?.pause()	// 2
+							if (state == CHANGED) return true
+							state = CHANGED						// 1 #34534535
+							mediaSession?.player?.pause()		// 2
 							updateNotification(true)
 							sendToWebApp(WebApp.SERVICE_MEDIA_PREV)
 							return true
 						}
 						KeyEvent.KEYCODE_MEDIA_NEXT -> {
-							if (loading) return true
-							loading = true
+							if (state == CHANGED) return true
+							state = CHANGED
 							mediaSession?.player?.pause()
 							updateNotification(true)
 							sendToWebApp(WebApp.SERVICE_MEDIA_NEXT)
@@ -1065,6 +1082,11 @@ class WebAppPlaybackService : MediaSessionService() {
 
 		"MediaService, onCreate".log()
 
+		// Értesítés regisztráció:
+		val channel = NotificationChannel(channelId, "MediaPlayback", NotificationManager.IMPORTANCE_LOW)
+		notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+		notificationManager?.createNotificationChannel(channel)
+
 		// SmallIcon:
 		val size = (12 * resources.displayMetrics.density).toInt()
 		val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
@@ -1079,21 +1101,17 @@ class WebAppPlaybackService : MediaSessionService() {
 		// Nyil színek:
 		activeColor = if (isSystemLightMode(this)) Color.parseColor("#333333") else Color.parseColor("#eeeeee")
 
-		// Értesítés regisztráció:
-		val channel = NotificationChannel(channelId, "MediaPlayback", NotificationManager.IMPORTANCE_LOW)
-		notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-		notificationManager?.createNotificationChannel(channel)
-
 		listener = object : Player.Listener {
 			override fun onIsPlayingChanged(isPlaying: Boolean) {
 				super.onIsPlayingChanged(isPlaying)
-				// stopped: #3452453443
-				// Váltáskor ez már nem fut le: #34534535
-				if (!stopped && !loading) {
-					updateNotification(true)
-					if (isPlaying) sendToWebApp(WebApp.SERVICE_MEDIA_PLAY)
-					else sendToWebApp(WebApp.SERVICE_MEDIA_PAUSE)
-				}
+				// STOPPED + CHANGED #3452453443
+				if (state < STARTED) return
+				// Ha elindult a service, várakozás a játszásra:
+				if (state == STARTED && isPlaying) state = ACTIVE
+				// STARTED + ACTIVE #34534535
+				updateNotification(true)
+				if (isPlaying)	sendToWebApp(WebApp.SERVICE_MEDIA_PLAY)
+				else			sendToWebApp(WebApp.SERVICE_MEDIA_PAUSE)
 			}
 		}
 
@@ -1124,7 +1142,7 @@ class WebAppPlaybackService : MediaSessionService() {
 			ContextCompat.RECEIVER_NOT_EXPORTED
 		)
 
-		startForeground(notificationId, buildNotification())
+		startForeground(notificationId, customNotification())
 	}
 
 
@@ -1150,9 +1168,11 @@ class WebAppPlaybackService : MediaSessionService() {
 			prepare()
 		}
 
-		loading = false
+		state = STARTED
+
 		sendToWebApp(WebApp.SERVICE_MEDIA_START)
 
+		"MediaService, started".log()
 		return START_STICKY
 	}
 
@@ -1182,12 +1202,16 @@ class WebAppPlaybackService : MediaSessionService() {
 		notificationManager = null
 		smallIcon = null
 
-		"MediaService, onDestroy".log()
+		"MediaService, stopped & destroyed".log()
 		super.onDestroy()
 	}
 
 	companion object {
-		var stopped = false
+		const val STOPPED = 1
+		const val CHANGED = 2
+		const val STARTED = 3
+		const val ACTIVE  = 4
+		var state = STOPPED
 	}
 }
 

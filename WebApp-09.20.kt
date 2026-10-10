@@ -1335,61 +1335,80 @@ private var defaultAPI = """
 	notification.xml layout:
 
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    style="?android:attr/buttonBarStyle"
     android:layout_width="match_parent"
-    android:layout_height="60dp"
-    android:orientation="horizontal"
-    android:gravity="center_vertical">
+    android:layout_height="50dp"
+    tools:ignore="TextSizeCheck">
 
-    <Button
-        android:id="@+id/media_prev"
-        style="?android:attr/buttonBarButtonStyle"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:text="⏮"
-        android:textSize="25sp"
-        android:paddingTop="0dp"
-        android:paddingBottom="5dp"
-        tools:ignore="HardcodedText" />
+    <LinearLayout
+        style="?android:attr/buttonBarStyle"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginTop="-5dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        tools:ignore="VisualLintBounds">
 
-    <Button
-        android:id="@+id/media_play"
-        style="?android:attr/buttonBarButtonStyle"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:text="▶"
-        android:textSize="30sp"
-        android:paddingTop="0dp"
-        android:paddingBottom="5dp"
-        tools:ignore="HardcodedText" />
+        <Button
+            android:id="@+id/media_prev"
+            style="?android:attr/buttonBarButtonStyle"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:paddingTop="0dp"
+            android:paddingBottom="5dp"
+            android:text="⏮"
+            android:textSize="25sp"
+            tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
 
-    <Button
-        android:id="@+id/media_pause"
-        style="?android:attr/buttonBarButtonStyle"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:textFontWeight="1000"
-        android:text="II"
-        android:textSize="25sp"
-        tools:ignore="HardcodedText" />
+        <Button
+            android:id="@+id/media_play"
+            style="?android:attr/buttonBarButtonStyle"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:paddingTop="0dp"
+            android:paddingBottom="5dp"
+            android:text="▶"
+            android:textSize="30sp"
+            tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
 
-    <Button
-        android:id="@+id/media_next"
-        style="?android:attr/buttonBarButtonStyle"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:text="⏭"
-        android:textSize="25sp"
-        android:paddingTop="0dp"
-        android:paddingBottom="5dp"
-        tools:ignore="HardcodedText" />
+        <Button
+            android:id="@+id/media_pause"
+            style="?android:attr/buttonBarButtonStyle"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:paddingTop="0dp"
+            android:paddingBottom="0dp"
+            android:text="II"
+            android:textFontWeight="1000"
+            android:textSize="25sp"
+            tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
 
-</LinearLayout>
+        <Button
+            android:id="@+id/media_next"
+            style="?android:attr/buttonBarButtonStyle"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:paddingTop="0dp"
+            android:paddingBottom="5dp"
+            android:text="⏭"
+            android:textSize="25sp"
+            tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
+
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/bottom_line"
+        android:layout_width="match_parent"
+        android:layout_height="3dp"
+        android:layout_alignParentBottom="true"
+        android:background="#CC3333"
+        android:orientation="horizontal" />
+
+</RelativeLayout>
 
 */

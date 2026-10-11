@@ -227,24 +227,28 @@ class WebApp(
 
 		class StatusBar {
 			var enabled = true
-			var blur = true
 			var height = 0
 		}
 
 		class NavigationBar {
 			var enabled = true
-			var blur = true
 			var height = 0
 		}
 
+		/**
+		 *	// A "height" nem írható felül! Csak az "enabled" !
+		 */
 		val statusBar = StatusBar()
+		/**
+		 *	// A "height" nem írható felül! Csak az "enabled" !
+		 */
 		val navigationBar = NavigationBar()
 	}
 
 
 
 	class BlueTooth(private val act: ComponentActivity) {
-		private var bluetoothEventCallback: ((String) -> Unit)? = null
+		private var bluetoothEventCallback: ((name: String) -> Unit)? = null
 
 		fun connectedName(callback: ((name: String) -> Unit)? = null) {
 			callback?.let { bluetoothEventCallback = it }
@@ -252,20 +256,22 @@ class WebApp(
 			val bluetoothManager = act.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
 			val adapter = bluetoothManager?.adapter
 
-			if (adapter != null && adapter.isEnabled) {
-				try {
-					if (ActivityCompat.checkSelfPermission(act, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
-						adapter.bondedDevices?.forEach { device ->
-							val isConnectedMethod = device.javaClass.getMethod("isConnected")
-							val isConnected = isConnectedMethod.invoke(device) as Boolean
+			adapter?.let { adt ->
+				if (adt.isEnabled) {
+					try {
+						if (ActivityCompat.checkSelfPermission(act, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+							adt.bondedDevices.forEach { device ->
+								val isConnectedMethod = device.javaClass.getMethod("isConnected")
+								val isConnected = isConnectedMethod.invoke(device) as Boolean
 
-							if (isConnected) {
-								val deviceName = try { device.name } catch (e: Exception) { device.address }
-								bluetoothEventCallback?.invoke(deviceName)
-								return
+								if (isConnected) {
+									val deviceName = try { device.name } catch (e: Exception) { device.address }
+									bluetoothEventCallback?.invoke(deviceName)
+									return
+								}
 							}
-						}
-				} catch (e: Exception) {}
+					} catch (e: Exception) {}
+				}
 			}
 
 			bluetoothEventCallback?.invoke("none")
@@ -299,11 +305,18 @@ class WebApp(
 
 	// Protected ------------------------------->
 	var display = activity.windowManager.currentWindowMetrics.bounds
+		private set
 	val dpiScale = activity.resources.displayMetrics.density
 	private lateinit var webViewParams: WindowManager.LayoutParams
-	lateinit var innerWebView: WebView
-		private set
+
+	/**
+	 *	// Csak EDGE_TO_EDGE stílusban, kezdéskor,
+	 *	// az API betöltése után és elforgatáskor:
+	 *	androidEdgeToEdge(jsTopHeight, jsBottomHeight);
+	 */
 	lateinit var javaScript: JsClass
+		private set
+	lateinit var innerWebView: WebView
 		private set
 	lateinit var bluetooth: BlueTooth
 		private set
@@ -351,7 +364,7 @@ class WebApp(
 	}
 
 	fun readAssetFile(file: String): String {
-		return activity.assets.open(file).bufferedReader().use { it.readText() }
+		return activity.assets.open(file).bufferedReader().readText()
 	}
 
 
@@ -441,7 +454,7 @@ class WebApp(
 			addAction(SERVICE_MEDIA_START)
 			addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
 			addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
-		}, ContextCompat.RECEIVER_NOT_EXPORTED)
+		}, ContextCompat.RECEIVER_EXPORTED)
 
 
 
@@ -521,12 +534,10 @@ class WebApp(
 						javaScript.statusBar.apply {
 							enabled = false
 							height = 0
-							blur = false
 						}
 						javaScript.navigationBar.apply {
 							enabled = false
 							height = 0
-							blur = false
 						}
 					}
 
@@ -535,8 +546,8 @@ class WebApp(
 
 					defaultAPI = defaultAPI
 						.replace(
-							"obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true }",
-							"obj = { topEnabled:${javaScript.statusBar.enabled}, btmEnabled:${javaScript.navigationBar.enabled}, topHeight:${javaScript.statusBar.height}, btmHeight:${javaScript.navigationBar.height}, topBlur:${javaScript.statusBar.blur}, btmBlur:${javaScript.navigationBar.blur} }"
+							"obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100 }",
+							"obj = { topEnabled:${javaScript.statusBar.enabled}, btmEnabled:${javaScript.navigationBar.enabled}, topHeight:${javaScript.statusBar.height}, btmHeight:${javaScript.navigationBar.height} }"
 						)
 						.replace(
 							"edgeToEdge = true",
@@ -557,7 +568,7 @@ class WebApp(
 					}
 					updateHeights(insets)
 					// Magasságok frissítése és újraküldése
-					// Az onAndroid(topH, btmH) is lefut !
+					// Az androidEdgeToEdge(topH, btmH) is lefut !
 					if (windowStyle == STYLE_EDGE_TO_EDGE) {
 						MAIN_LOOPER.removeCallbacks(updateJS)
 						MAIN_LOOPER.postDelayed(updateJS, 100)
@@ -773,12 +784,20 @@ class WebApp(
 		const val SERVICE_MEDIA_START = "action_5"
 	}
 }
+// ----------- WebApp -----------
 
 
 
 
 
-object MediaEvents {
+
+
+
+
+
+
+
+object MediaEvent {
 	const val START		= 0
 	const val PLAY		= 1
 	const val PAUSE		= 2
@@ -796,10 +815,11 @@ class WebAppMedia(
 	private var parameters: WindowManager.LayoutParams? = null
 	private var onEventsCallback: ((event: Int) -> Unit)? = null
 	private val powerManager = activity.getSystemService(POWER_SERVICE) as PowerManager
-	private var resumedActivity = false
+	private var firstResumeSkipped = false
 	private var screenOn = false
 
 	private fun sendToService(keyCode: Int) {
+		if (WebAppPlaybackService.state < WebAppPlaybackService.STARTED) return
 		val intent = Intent(Intent.ACTION_MEDIA_BUTTON)
 		intent.component = ComponentName(activity, WebAppPlaybackService::class.java)
 		intent.putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
@@ -811,21 +831,21 @@ class WebAppMedia(
 	}
 
 	/**
-	 *	MediaEvents.START   -> { "onStart".log() }
-	 *	MediaEvents.PLAY    -> { "onPlay".log() }
-	 *	MediaEvents.PAUSE   -> { "onPause".log() }
-	 *	MediaEvents.PREV    -> { "onPrev".log() }
-	 *	MediaEvents.NEXT    -> { "onNext".log() }
-	 *	MediaEvents.CHANGED -> { "onChanged".log() }
-	 *	MediaEvents.STOP    -> { "onStop".log() }
+	 *	MediaEvent.START   -> { "onStart".log() }
+	 *	MediaEvent.PLAY    -> { "onPlay".log() }
+	 *	MediaEvent.PAUSE   -> { "onPause".log() }
+	 *	MediaEvent.PREV    -> { "onPrev".log() }
+	 *	MediaEvent.NEXT    -> { "onNext".log() }
+	 *	MediaEvent.CHANGED -> { "onChanged".log() }
+	 *	MediaEvent.STOP    -> { "onStop".log() }
 	 */
-	fun onEvents(callback: (event: Int) -> Unit) {
+	fun onEvent(callback: (event: Int) -> Unit) {
 		onEventsCallback = callback
 	}
 
 	// Ez csak a receiverből fut:
 	fun started() {
-		onEventsCallback?.invoke(MediaEvents.START)
+		onEventsCallback?.invoke(MediaEvent.START)
 	}
 
 
@@ -839,10 +859,14 @@ class WebAppMedia(
 	}
 
 	// Leállítás, onDestroy()
-	fun stop() {
-		onEventsCallback?.invoke(MediaEvents.STOP)
+	fun stop(destroyed: Boolean) {
+		if (WebAppPlaybackService.state < WebAppPlaybackService.CHANGED) return
+		onEventsCallback?.invoke(MediaEvent.STOP)
 		// Muszáj ez, mert a szerviz újra kiküldheti az értesítést, a pause miatt ! #3452453443
-		WebAppPlaybackService.state = WebAppPlaybackService.STOPPED
+		WebAppPlaybackService.state = when (destroyed) {
+			true -> WebAppPlaybackService.DESTROYED
+			false -> WebAppPlaybackService.STOPPED
+		}
 		// Utána leállítjuk a Service-t:
 		activity.stopService(
 			Intent(activity, WebAppPlaybackService::class.java)
@@ -851,28 +875,28 @@ class WebAppMedia(
 
 	fun play(fromService: Boolean? = false) {
 		// Service:
-		if (fromService == true) onEventsCallback?.invoke(MediaEvents.PLAY)
+		if (fromService == true) onEventsCallback?.invoke(MediaEvent.PLAY)
 		// Activity:
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PLAY)
 	}
 
 	fun pause(fromService: Boolean? = false) {
-		if (fromService == true) onEventsCallback?.invoke(MediaEvents.PAUSE)
+		if (fromService == true) onEventsCallback?.invoke(MediaEvent.PAUSE)
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PAUSE)
 	}
 
 	fun prev(fromService: Boolean? = false) {
 		if (fromService == true) {
-			onEventsCallback?.invoke(MediaEvents.CHANGED)
-			onEventsCallback?.invoke(MediaEvents.PREV)
+			onEventsCallback?.invoke(MediaEvent.CHANGED)
+			onEventsCallback?.invoke(MediaEvent.PREV)
 		}
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
 	}
 
 	fun next(fromService: Boolean? = false) {
 		if (fromService == true) {
-			onEventsCallback?.invoke(MediaEvents.CHANGED)
-			onEventsCallback?.invoke(MediaEvents.NEXT)
+			onEventsCallback?.invoke(MediaEvent.CHANGED)
+			onEventsCallback?.invoke(MediaEvent.NEXT)
 		}
 		else sendToService(KeyEvent.KEYCODE_MEDIA_NEXT)
 	}
@@ -883,7 +907,7 @@ class WebAppMedia(
 			"pause"	-> sendToService(KeyEvent.KEYCODE_MEDIA_PAUSE)
 			"prev"	-> sendToService(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
 			"next"	-> sendToService(KeyEvent.KEYCODE_MEDIA_NEXT)
-			"stop"	-> stop()
+			"stop"	-> stop(false)
 		}
 	}
 
@@ -894,7 +918,7 @@ class WebAppMedia(
 		if (isTopResumedActivity) {
 			val display = activity.windowManager.currentWindowMetrics.bounds
 			parameters?.let { params ->
-				// Elforgatás a háttérben miatt:
+				// "Elforgatás a háttérben" miatt:
 				params.width = display.width()
 				params.height = display.height()
 				params.flags = params.flags and (
@@ -905,12 +929,13 @@ class WebAppMedia(
 			activity.windowManager.updateViewLayout(webview, parameters)
 			webview.requestFocus()
 			// App megnyitásakor még ne fusson le az onLoad miatt !
-			if (resumedActivity) {
+			if (firstResumeSkipped) {
 				// Zárt képernyő utáni visszatéréskor:
 				if (!screenOn) webview.alpha = 1f
 				else webview.animate()?.alpha(1f)?.setDuration(200)?.startDelay = 200
 			}
-			else resumedActivity = true
+			// Első onResume átugrása:
+			else firstResumeSkipped = true
 			return
 		}
 		// OnPause:
@@ -927,11 +952,16 @@ class WebAppMedia(
 	}
 
 	fun destroy() {
-		stop()
+		stop(true)
 		onEventsCallback = null
 		parameters = null
 	}
 }
+
+
+
+
+
 
 
 
@@ -1098,7 +1128,7 @@ class WebAppPlaybackService : MediaSessionService() {
 	override fun onCreate() {
 		super.onCreate()
 
-		"MediaService, onCreate".log()
+		"MediaService, onCreate()".log()
 
 		// Értesítés regisztráció:
 		val channel = NotificationChannel(channelId, "MediaPlayback", NotificationManager.IMPORTANCE_LOW)
@@ -1126,8 +1156,10 @@ class WebAppPlaybackService : MediaSessionService() {
 				if (state < STARTED) return
 				// ACTIVE #34534535
 				if (state == ACTIVE) {
-					if (isPlaying)	sendToWebApp(WebApp.SERVICE_MEDIA_PLAY)
-					else			sendToWebApp(WebApp.SERVICE_MEDIA_PAUSE)
+					when (isPlaying) {
+						true  -> sendToWebApp(WebApp.SERVICE_MEDIA_PLAY)
+						false -> sendToWebApp(WebApp.SERVICE_MEDIA_PAUSE)
+					}
 				}
 				// Ha elindult a service, várakozás a játszásra:
 				else if (isPlaying) state = ACTIVE
@@ -1165,7 +1197,8 @@ class WebAppPlaybackService : MediaSessionService() {
 		)
 
 		startForeground(notificationId, customNotification())
-	}
+
+	} // onCreate
 
 
 	override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -1194,7 +1227,7 @@ class WebAppPlaybackService : MediaSessionService() {
 
 		sendToWebApp(WebApp.SERVICE_MEDIA_START)
 
-		"MediaService, started".log()
+		"MediaService, onStartCommand()".log()
 		return START_STICKY
 	}
 
@@ -1224,16 +1257,17 @@ class WebAppPlaybackService : MediaSessionService() {
 		notificationManager = null
 		smallIcon = null
 
-		"MediaService, stopped & destroyed".log()
+		"MediaService, ${if (state == DESTROYED) "onDestroy()" else "stopped"}".log()
 		super.onDestroy()
 	}
 
 	companion object {
-		const val STOPPED = 1
-		const val CHANGED = 2
-		const val STARTED = 3
-		const val ACTIVE  = 4
-		var state = STOPPED
+		const val DESTROYED = 0
+		const val STOPPED   = 1
+		const val CHANGED   = 2
+		const val STARTED   = 3
+		const val ACTIVE    = 4
+		var state = DESTROYED
 	}
 }
 
@@ -1248,35 +1282,43 @@ private var defaultAPI = """
 	if (wnd.newWebView) return;
 	wnd.newWebView = 1;
 
-	/*Object.defineProperty(Object.prototype, 'params', {
-		value: function(object) {
-			if (object && typeof object === 'object') {
-				for (const key in object) {
-					if (Object.prototype.hasOwnProperty.call(object, key)) {
-						this[key] = object[key];
+	if (typeof Object.prototype.params !== 'function')
+		Object.defineProperty(Object.prototype, 'params', {
+			value: function(object) {
+				if (object && typeof object === 'object') {
+					for (const key in object) {
+						if (Object.prototype.hasOwnProperty.call(object, key)) {
+							this[key] = object[key];
+						}
 					}
 				}
-			}
-			return this;
-		},
-		writable: true,
-		configurable: true
+				return this;
+			},
+			writable: true,
+			configurable: true
+		});
+	else console.log('! Van Object.prototype.params !');
+
+	if (typeof Element.prototype.apply !== 'function')
+		Object.defineProperty(Element.prototype, 'apply', {
+			value: function(block) {
+				if (typeof block === 'function') {
+					block.call(this, this);
+				}
+				return this;
+			},
+			writable: true,
+			configurable: true
+		});
+	else console.log('! Van Element.prototype.apply !');
+
+
+
+	const meta = doc.createElement('meta').params({
+		name: 'viewport',
+		content: 'width=device-width, initial-scale=1.0, user-scalable=no'
 	});
 
-	Object.defineProperty(Element.prototype, 'apply', {
-		value: function(block) {
-			if (typeof block === 'function') {
-				block.call(this, this);
-			}
-			return this;
-		},
-		writable: true,
-		configurable: true
-	});*/
-
-	const meta = doc.createElement('meta');
-	meta.name = 'viewport';
-	meta.content = 'width=device-width, initial-scale=1.0, user-scalable=no';
 	doc.head.appendChild(meta);
 
 
@@ -1287,20 +1329,20 @@ private var defaultAPI = """
 
 	if (edgeToEdge) {
 
-		const obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100, topBlur:true, btmBlur:true };
+		const obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100 };
 
 		wnd.setStatusBarAndNavigationBarHeight = function(topH, btmH) {
 			let gradient = 'linear-gradient(to bottom,';
 
-			if (obj.topEnabled && obj.topBlur) gradient += ('black ' + (topH * 0.8) + 'px, transparent ' + topH + 'px');
+			if (obj.topEnabled) gradient += ('black ' + (topH * 0.8) + 'px, transparent ' + topH + 'px');
 
-			if (obj.topEnabled && obj.topBlur && obj.btmEnabled && obj.btmBlur) gradient += ',';
+			if (obj.topEnabled && obj.btmEnabled) gradient += ',';
 
-			if (obj.btmEnabled && obj.btmBlur) gradient += ('transparent calc(100% - ' + btmH + 'px), black calc(100% - ' + (btmH * 0.6) + 'px)');
+			if (obj.btmEnabled) gradient += ('transparent calc(100% - ' + btmH + 'px), black calc(100% - ' + (btmH * 0.6) + 'px)');
 
 			gradient += ')';
 
-			if (obj.topEnabled || obj.btmEnabled) doc.getElementById('top-bottom-blurred-element').style.maskImage = gradient;
+			if (obj.topEnabled || obj.btmEnabled) doc.getElementById('android-top-bottom-blurred-overlay').style.maskImage = gradient;
 
 			if (typeof androidEdgeToEdge === 'function') androidEdgeToEdge(topH, btmH);
 		};
@@ -1312,16 +1354,18 @@ private var defaultAPI = """
 				'inset: 0;' +
 				'pointer-events: none;' +
 				'backdrop-filter: blur(10px);' +
-				'z-index: 10000;');
+				'z-index: 10000;'
+			);
 
-			const blurredElem = doc.createElement('div');
-
-			blurredElem.id = 'top-bottom-blurred-element';
-			blurredElem.setAttribute('style', css);
+			const blurredElem = doc.createElement('div').apply((it) => {
+				it.id = 'android-top-bottom-blurred-overlay';
+				it.setAttribute('style', css);
+			});
 
 			doc.body.appendChild(blurredElem);
-			wnd.setStatusBarAndNavigationBarHeight(obj.topHeight, obj.btmHeight);
 		}
+
+		wnd.setStatusBarAndNavigationBarHeight(obj.topHeight, obj.btmHeight);
 	}
 
 })(window, document);

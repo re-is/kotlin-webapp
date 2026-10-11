@@ -136,6 +136,7 @@ Manifest
  *	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
  *	<application>
+ *		android:hardwareAccelerated="true"
  *		<activity
  *			// Nem reagál ezekre:
  *			android:configChanges="orientation|screenSize|keyboardHidden"
@@ -155,7 +156,7 @@ Manifest
 Theme.xml
 
  *	<resources>
- *		<style name="Theme.Absolute" parent="android:Theme.Material.NoActionBar">
+ *		<style name="Theme.WebApp" parent="android:Theme.Material.NoActionBar">
  *			<item name="android:statusBarColor">@color/graphite</item>
  *			<item name="android:windowBackground">@color/graphite</item>
  *			<item name="android:navigationBarColor">@color/graphite</item>

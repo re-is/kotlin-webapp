@@ -377,9 +377,6 @@ class WebApp(
 	)
 	fun create(): WebApp {
 
-		// Törli a Destroy exit-et !
-		MAIN_LOOPER.removeCallbacksAndMessages(null)
-
 		// Nagyméretű ablaknál:
 		if (windowStyle > STYLE_NORMAL) {
 			if (windowStyle == STYLE_FULL_SCREEN) fullScreen(true)
@@ -389,8 +386,16 @@ class WebApp(
 			}
 		}
 
+		// Context téma alapján:
+		val appContext = (
+			if (windowType == TYPE_NORMAL)
+				activity
+			else
+				android.view.ContextThemeWrapper(activity.applicationContext, R.style.Theme_WebApp)
+		)
+
 		// WebView beállítása:
-		innerWebView = WebView(if (windowType == TYPE_NORMAL) activity else activity.applicationContext).apply {
+		innerWebView = WebView(appContext).apply {
 			keepScreenOn = true
 			scrollBarSize = 0
 			alpha = 0f
@@ -733,6 +738,9 @@ class WebApp(
 		if (!ovarlayPermissionAllowed) return
 
 		CookieManager.getInstance().flush()
+
+		// Törölni kell minden időzítőt !
+		MAIN_LOOPER.removeCallbacksAndMessages(null)
 
 		try { activity.unregisterReceiver(receiver) } catch (_: Exception) {}
 

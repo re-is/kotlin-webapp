@@ -1,5 +1,7 @@
 @file:Suppress("unused")
 
+package com.example.ytube
+
 import android.Manifest
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
@@ -560,8 +562,8 @@ class WebApp(
 
 					defaultAPI = defaultAPI
 						.replace(
-							"obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100 }",
-							"obj = { topEnabled:${edgeToEdge.statusBar.blur}, btmEnabled:${edgeToEdge.navigationBar.blur}, topHeight:${edgeToEdge.statusBar.height}, btmHeight:${edgeToEdge.navigationBar.height} }"
+							"obj = { topBlur:true, btmBlur:true, topHeight:50, btmHeight:100 }",
+							"obj = { topBlur:${edgeToEdge.statusBar.blur}, btmBlur:${edgeToEdge.navigationBar.blur}, topHeight:${edgeToEdge.statusBar.height}, btmHeight:${edgeToEdge.navigationBar.height} }"
 						)
 						.replace(
 							"edgeToEdge = true",
@@ -1167,7 +1169,7 @@ class WebAppPlaybackService : MediaSessionService() {
 
 		// SmallIcon:
 		val size = (12 * resources.displayMetrics.density).toInt()
-		val bitmap = createBitmap(size, size, Bitmap.Config.RGB_565)
+		val bitmap = createBitmap(size, size)
 		val canvas = Canvas(bitmap)
 		val paint = Paint().apply {
 			color = Color.WHITE
@@ -1357,36 +1359,31 @@ private var defaultAPI = """
 
 	if (edgeToEdge) {
 
-		const obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100 };
+		const obj = { topBlur:true, btmBlur:true, topHeight:50, btmHeight:100 };
 
 		wnd.setStatusBarAndNavigationBarHeight = function(topH, btmH) {
-			if (obj.topEnabled || obj.btmEnabled) {
-				let gradient = 'linear-gradient(to bottom,';
-	
-				if (obj.topEnabled) gradient += ('black ' + (topH * 0.8) + 'px, transparent ' + topH + 'px');
-	
-				if (obj.topEnabled && obj.btmEnabled) gradient += ',';
-	
-				if (obj.btmEnabled) gradient += ('transparent calc(100% - ' + btmH + 'px), black calc(100% - ' + (btmH * 0.6) + 'px)');
-	
-				gradient += ')';
-	
-				doc.getElementById('android-top-bottom-blurred-overlay').style.maskImage = gradient;
-			}
 
-			// Ez mindig lefut !
+			if (obj.topBlur) doc.getElementById('android-top-blurred-overlay').style.height = topH + 'px';
+			if (obj.btmBlur) doc.getElementById('android-btm-blurred-overlay').style.height = btmH + 'px';
+
 			if (typeof androidEdgeToEdge === 'function') androidEdgeToEdge(topH, btmH);
 		};
 
-		if (obj.topEnabled || obj.btmEnabled) {
-			const css = 'position:fixed; inset:0; pointer-events:none; backdrop-filter:blur(10px); z-index:2000;';
+		if (obj.topBlur || obj.btmBlur) {
+			const css = 'position:fixed; width: 100vw; left:0; backdrop-filter:blur(10px); z-index:2000;';
 
-			const blurredElem = doc.createElement('div').apply((it) => {
-				it.id = 'android-top-bottom-blurred-overlay';
-				it.setAttribute('style', css);
+			const blurredTop = doc.createElement('div').apply((it) => {
+				it.id = 'android-top-blurred-overlay';
+				it.setAttribute('style', css + 'top:0;');
 			});
 
-			doc.body.appendChild(blurredElem);
+			const blurredBtm = doc.createElement('div').apply((it) => {
+				it.id = 'android-btm-blurred-overlay';
+				it.setAttribute('style', css + 'bottom:0;');
+			});
+
+			doc.body.appendChild(blurredTop);
+			doc.body.appendChild(blurredBtm);
 		}
 
 		wnd.setStatusBarAndNavigationBarHeight(obj.topHeight, obj.btmHeight);

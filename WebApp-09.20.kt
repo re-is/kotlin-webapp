@@ -73,6 +73,7 @@ import androidx.media3.session.MediaSessionService
 import java.io.ByteArrayInputStream
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import androidx.core.graphics.toColorInt
 
 
 //-------------------------------------------------------------------------->
@@ -225,23 +226,29 @@ class WebApp(
 			val top = (jsTop * dpi).toInt()
 			webview.touch(left, top)
 		}
+	}
 
+
+
+	class EdgeToEdge {
 		class StatusBar {
-			var enabled = true
+			var blur = true
 			var height = 0
+			var colorMode = ETE_AUTO
 		}
 
 		class NavigationBar {
-			var enabled = true
+			var blur = true
 			var height = 0
+			var colorMode = ETE_AUTO
 		}
 
 		/**
-		 *	// A "height" nem írható felül! Csak az "enabled" !
+		 *	// A "height" nem írható felül!
 		 */
 		val statusBar = StatusBar()
 		/**
-		 *	// A "height" nem írható felül! Csak az "enabled" !
+		 *	// A "height" nem írható felül!
 		 */
 		val navigationBar = NavigationBar()
 	}
@@ -316,6 +323,8 @@ class WebApp(
 	 *	androidEdgeToEdge(jsTopHeight, jsBottomHeight);
 	 */
 	lateinit var javaScript: JsClass
+		private set
+	lateinit var edgeToEdge: EdgeToEdge
 		private set
 	lateinit var innerWebView: WebView
 		private set
@@ -403,9 +412,6 @@ class WebApp(
 			settings.apply {
 				javaScriptEnabled = true
 				domStorageEnabled = true
-				allowFileAccess = true
-				loadsImagesAutomatically = true
-				blockNetworkImage = false
 				mediaPlaybackRequiresUserGesture = false
 				useWideViewPort = false
 				loadWithOverviewMode = false
@@ -416,6 +422,7 @@ class WebApp(
 				}
 			}
 			setBackgroundColor(Color.TRANSPARENT)
+			setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
 			if (windowStyle == STYLE_EDGE_TO_EDGE) setOnTouchListener { _, event ->
 				if (event.action == MotionEvent.ACTION_UP) edgeToEdgeBarColors()
@@ -426,6 +433,7 @@ class WebApp(
 		// Osztályok:
 		bluetooth = BlueTooth(activity)
 		javaScript = JsClass(innerWebView, dpiScale)
+		edgeToEdge = EdgeToEdge()
 		media = WebAppMedia(activity, innerWebView)
 		innerWebView.addJavascriptInterface(javaScript.javascriptInterface, "android")
 
@@ -518,12 +526,12 @@ class WebApp(
 			val statusHeight = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top.toFloat()
 			val navigHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom.toFloat()
 
-			javaScript.statusBar.height = if (statusHeight == 0f) 0 else (statusHeight / dpiScale).toInt()
-			javaScript.navigationBar.height = if (navigHeight == 0f) 0 else (navigHeight / dpiScale).toInt()
+			edgeToEdge.statusBar.height = if (statusHeight == 0f) 0 else (statusHeight / dpiScale).toInt()
+			edgeToEdge.navigationBar.height = if (navigHeight == 0f) 0 else (navigHeight / dpiScale).toInt()
 		}
 
 		val updateJS = Runnable {
-			innerWebView.evaluateJavascript("window.setStatusBarAndNavigationBarHeight(${javaScript.statusBar.height}, ${javaScript.navigationBar.height});", null)
+			innerWebView.evaluateJavascript("window.setStatusBarAndNavigationBarHeight(${edgeToEdge.statusBar.height}, ${edgeToEdge.navigationBar.height});", null)
 		}
 
 		// Rendszersávok méretei:
@@ -537,12 +545,12 @@ class WebApp(
 						updateHeights(insets)
 					}
 					else {
-						javaScript.statusBar.apply {
-							enabled = false
+						edgeToEdge.statusBar.apply {
+							blur = false
 							height = 0
 						}
-						javaScript.navigationBar.apply {
-							enabled = false
+						edgeToEdge.navigationBar.apply {
+							blur = false
 							height = 0
 						}
 					}
@@ -553,7 +561,7 @@ class WebApp(
 					defaultAPI = defaultAPI
 						.replace(
 							"obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100 }",
-							"obj = { topEnabled:${javaScript.statusBar.enabled}, btmEnabled:${javaScript.navigationBar.enabled}, topHeight:${javaScript.statusBar.height}, btmHeight:${javaScript.navigationBar.height} }"
+							"obj = { topEnabled:${edgeToEdge.statusBar.blur}, btmEnabled:${edgeToEdge.navigationBar.blur}, topHeight:${edgeToEdge.statusBar.height}, btmHeight:${edgeToEdge.navigationBar.height} }"
 						)
 						.replace(
 							"edgeToEdge = true",
@@ -594,7 +602,8 @@ class WebApp(
 	private var sampleCanvas: Canvas? = null
 	private fun edgeToEdgeBarColors() {
 
-		if (innerWebView.width > 0 && innerWebView.height > 0) {
+		if (innerWebView.width > 0 && innerWebView.height > 0 &&
+			(edgeToEdge.statusBar.colorMode == ETE_AUTO || edgeToEdge.navigationBar.colorMode == ETE_AUTO)) {
 
 			val scrollX = innerWebView.scrollX.toFloat()
 			val scrollY = innerWebView.scrollY.toFloat()
@@ -602,7 +611,7 @@ class WebApp(
 			val targetHeight = innerWebView.height
 
 			if (sampleBitmap == null || sampleBitmap?.height != targetHeight) {
-				sampleBitmap = Bitmap.createBitmap(1, targetHeight, Bitmap.Config.RGB_565)
+				sampleBitmap = createBitmap(1, targetHeight, Bitmap.Config.RGB_565)
 				sampleCanvas = Canvas(sampleBitmap!!)
 			}
 
@@ -616,8 +625,18 @@ class WebApp(
 				val btmColorLum = sampleBitmap!!.getColor(0, targetHeight - 60).luminance()
 
 				val windowInsetsController = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
-				windowInsetsController.isAppearanceLightStatusBars = (topColorLum > 0.5)
-				windowInsetsController.isAppearanceLightNavigationBars = (btmColorLum > 0.5)
+
+				when (edgeToEdge.statusBar.colorMode) {
+					ETE_LIGHT -> windowInsetsController.isAppearanceLightStatusBars = false
+					ETE_DARK -> windowInsetsController.isAppearanceLightStatusBars = true
+					else -> windowInsetsController.isAppearanceLightStatusBars = (topColorLum > 0.5)
+				}
+
+				when (edgeToEdge.navigationBar.colorMode) {
+					ETE_LIGHT -> windowInsetsController.isAppearanceLightNavigationBars = false
+					ETE_DARK -> windowInsetsController.isAppearanceLightNavigationBars = true
+					else -> windowInsetsController.isAppearanceLightNavigationBars = (btmColorLum > 0.5)
+				}
 			}
 		}
 	}
@@ -791,6 +810,9 @@ class WebApp(
 		const val SERVICE_MEDIA_PREV = "action_3"
 		const val SERVICE_MEDIA_NEXT = "action_4"
 		const val SERVICE_MEDIA_START = "action_5"
+		const val ETE_AUTO = 0
+		const val ETE_LIGHT = 1
+		const val ETE_DARK = 2
 	}
 }
 // ----------- WebApp -----------
@@ -922,42 +944,41 @@ class WebAppMedia(
 
 
 	fun topResumedActivityChange(isTopResumedActivity: Boolean) {
-		if (!Settings.canDrawOverlays(activity) || parameters == null) return
-		// onResume:
-		if (isTopResumedActivity) {
-			val display = activity.windowManager.currentWindowMetrics.bounds
-			parameters?.let { params ->
+		if (Settings.canDrawOverlays(activity)) parameters?.let { params ->
+			// onResume:
+			if (isTopResumedActivity) {
 				// "Elforgatás a háttérben" miatt:
+				val display = activity.windowManager.currentWindowMetrics.bounds
 				params.width = display.width()
 				params.height = display.height()
 				params.flags = params.flags and (
 						WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
 						WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
 				).inv()
-			}
-			activity.windowManager.updateViewLayout(webview, parameters)
-			webview.requestFocus()
-			// App megnyitásakor még ne fusson le az onLoad miatt !
-			if (firstResumeSkipped) {
-				// Zárt képernyő utáni visszatéréskor:
-				if (!screenOn) webview.alpha = 1f
-				else webview.animate()?.alpha(1f)?.setDuration(200)?.startDelay = 200
-			}
-			// Első onResume átugrása:
-			else firstResumeSkipped = true
-			return
-		}
-		// OnPause:
-		screenOn = powerManager.isInteractive
 
-		parameters?.let { params ->
-			params.flags = params.flags or
-					WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-					WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-		}
+				activity.windowManager.updateViewLayout(webview, parameters)
+				webview.requestFocus()
+				// App megnyitásakor még ne fusson le az onLoad miatt !
+				if (firstResumeSkipped) {
+					// Zárt képernyő utáni visszatéréskor:
+					if (!screenOn) webview.alpha = 1f
+					else webview.animate()?.alpha(1f)?.setDuration(200)?.startDelay = 200
+				}
+				// Első onResume átugrása:
+				else firstResumeSkipped = true
+			}
+			// OnPause:
+			else {
+				screenOn = powerManager.isInteractive
 
-		activity.windowManager.updateViewLayout(webview, parameters)
-		webview.animate()?.alpha(0f)?.setDuration(200)?.startDelay = 0
+				params.flags = params.flags or
+						WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+						WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+
+				activity.windowManager.updateViewLayout(webview, parameters)
+				webview.animate()?.alpha(0f)?.setDuration(200)?.startDelay = 0
+			}
+		}
 	}
 
 	fun destroy() {
@@ -992,7 +1013,7 @@ class WebAppPlaybackService : MediaSessionService() {
 	private val channelId = "WebAppMediaPlayback"
 	private var sendedNotify = false
 	private var activeColor = 0
-	private val inactiveColor = Color.parseColor("#999999")
+	private val inactiveColor = "#999999".toColorInt()
 	private var played = false
 
 	private fun sendToWebApp(action: String) {
@@ -1146,7 +1167,7 @@ class WebAppPlaybackService : MediaSessionService() {
 
 		// SmallIcon:
 		val size = (12 * resources.displayMetrics.density).toInt()
-		val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+		val bitmap = createBitmap(size, size, Bitmap.Config.RGB_565)
 		val canvas = Canvas(bitmap)
 		val paint = Paint().apply {
 			color = Color.WHITE
@@ -1156,7 +1177,7 @@ class WebAppPlaybackService : MediaSessionService() {
 		smallIcon = IconCompat.createWithBitmap(bitmap)
 
 		// Nyil színek:
-		activeColor = if (isSystemLightMode(this)) Color.parseColor("#333333") else Color.parseColor("#eeeeee")
+		activeColor = if (isSystemLightMode(this)) "#333333".toColorInt() else "#eeeeee".toColorInt()
 
 		listener = object : Player.Listener {
 			override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -1306,7 +1327,6 @@ private var defaultAPI = """
 			writable: true,
 			configurable: true
 		});
-	else console.log('! Van Object.prototype.params !');
 
 	if (typeof Element.prototype.apply !== 'function')
 		Object.defineProperty(Element.prototype, 'apply', {
@@ -1319,7 +1339,6 @@ private var defaultAPI = """
 			writable: true,
 			configurable: true
 		});
-	else console.log('! Van Element.prototype.apply !');
 
 
 
@@ -1341,30 +1360,26 @@ private var defaultAPI = """
 		const obj = { topEnabled:true, btmEnabled:true, topHeight:50, btmHeight:100 };
 
 		wnd.setStatusBarAndNavigationBarHeight = function(topH, btmH) {
-			let gradient = 'linear-gradient(to bottom,';
+			if (obj.topEnabled || obj.btmEnabled) {
+				let gradient = 'linear-gradient(to bottom,';
+	
+				if (obj.topEnabled) gradient += ('black ' + (topH * 0.8) + 'px, transparent ' + topH + 'px');
+	
+				if (obj.topEnabled && obj.btmEnabled) gradient += ',';
+	
+				if (obj.btmEnabled) gradient += ('transparent calc(100% - ' + btmH + 'px), black calc(100% - ' + (btmH * 0.6) + 'px)');
+	
+				gradient += ')';
+	
+				doc.getElementById('android-top-bottom-blurred-overlay').style.maskImage = gradient;
+			}
 
-			if (obj.topEnabled) gradient += ('black ' + (topH * 0.8) + 'px, transparent ' + topH + 'px');
-
-			if (obj.topEnabled && obj.btmEnabled) gradient += ',';
-
-			if (obj.btmEnabled) gradient += ('transparent calc(100% - ' + btmH + 'px), black calc(100% - ' + (btmH * 0.6) + 'px)');
-
-			gradient += ')';
-
-			if (obj.topEnabled || obj.btmEnabled) doc.getElementById('android-top-bottom-blurred-overlay').style.maskImage = gradient;
-
+			// Ez mindig lefut !
 			if (typeof androidEdgeToEdge === 'function') androidEdgeToEdge(topH, btmH);
 		};
 
 		if (obj.topEnabled || obj.btmEnabled) {
-			const css = (
-				'position: fixed;' +
-				'content: "";' +
-				'inset: 0;' +
-				'pointer-events: none;' +
-				'backdrop-filter: blur(10px);' +
-				'z-index: 10000;'
-			);
+			const css = 'position:fixed; inset:0; pointer-events:none; backdrop-filter:blur(10px); z-index:2000;';
 
 			const blurredElem = doc.createElement('div').apply((it) => {
 				it.id = 'android-top-bottom-blurred-overlay';

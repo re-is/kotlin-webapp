@@ -316,6 +316,7 @@ class WebApp(
 		private set
 	val dpiScale = activity.resources.displayMetrics.density
 	private lateinit var webViewParams: WindowManager.LayoutParams
+	private var onEventsCallback: ((event: Int, url: String?) -> Unit)? = null
 
 	/**
 	 *	// Csak EDGE_TO_EDGE stílusban, kezdéskor,
@@ -377,6 +378,14 @@ class WebApp(
 		return activity.assets.open(file).bufferedReader().readText()
 	}
 
+	fun back() {
+		if (innerWebView.canGoBack()) innerWebView.goBack()
+	}
+
+	fun onEvent(callback: (event: Int, url: String?) -> Unit) {
+		onEventsCallback = callback
+	}
+
 
 
 	@SuppressLint(
@@ -416,6 +425,7 @@ class WebApp(
 				useWideViewPort = false
 				loadWithOverviewMode = false
 			}
+			webViewClient = Client()
 			webChromeClient = object : WebChromeClient() {
 				override fun getDefaultVideoPoster(): Bitmap {
 					return createBitmap(1,1)
@@ -481,6 +491,14 @@ class WebApp(
 
 			// WebView hozzáadás:
 			activity.addContentView(innerWebView, param)
+
+			// Back észlelés:
+			val callback = object : OnBackPressedCallback(true) {
+				override fun handleOnBackPressed() {
+					onEventsCallback?.invoke(BACK, null)
+				}
+			}
+			activity.onBackPressedDispatcher.addCallback(activity, callback)
 		}
 		// TYPE_MEDIA
 		else {
@@ -517,7 +535,20 @@ class WebApp(
 			// WebView hozzáadás:
 			activity.windowManager.addView(innerWebView, webViewParams)
 
+			// Params átküldése Media-ba:
 			media.params(webViewParams)
+
+			// Back észlelés:
+			innerWebView.isFocusable = true
+			innerWebView.isFocusableInTouchMode = true
+			innerWebView.setOnKeyListener { _, keyCode, event ->
+				if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+					onEventsCallback?.invoke(BACK, null)
+					true
+				} else {
+					false
+				}
+			}
 		}
 
 
@@ -564,8 +595,8 @@ class WebApp(
 							"obj = { topBlur:${edgeToEdge.statusBar.blur}, btmBlur:${edgeToEdge.navigationBar.blur}, topHeight:${edgeToEdge.statusBar.height}, btmHeight:${edgeToEdge.navigationBar.height} }"
 						)
 						.replace(
-							"edgeToEdge = true",
-							"edgeToEdge = ${(windowStyle == STYLE_EDGE_TO_EDGE)}"
+							"document, true",
+							"document, ${(windowStyle == STYLE_EDGE_TO_EDGE)}"
 						)
 
 					started = true
@@ -656,87 +687,47 @@ class WebApp(
 	}
 
 
-	/**
-	 *	// Láncolható !
-	 */
-	fun events(
-		onStart: ((WebView, String?) -> Unit)? = null,
-		onLoad: ((WebView, String?) -> Unit)? = null,
-		onError: ((WebView) -> Unit)? = null,
-		onIntercept: ((WebView, WebResourceRequest?) -> WebResourceResponse?)? = null,
-		onBack: ((WebView) -> Unit)? = null
-	): WebApp {
 
-		onBack?.let { action ->
-			// NORMAL módban Activity visszagomb
-			val callback = object : OnBackPressedCallback(true) {
-				override fun handleOnBackPressed() {
-					action(innerWebView)
-				}
+
+
+
+	private inner class Client : WebViewClient() {
+
+		var loaded = true
+		override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+			super.onPageStarted(view, url, favicon)
+			if (!loaded) return
+			loaded = false
+			view?.let { wv ->
+				wv.alpha = 0f
+				onEventsCallback?.invoke(STARTED, url)
 			}
-			activity.onBackPressedDispatcher.addCallback(activity, callback)
+		}
 
-			// MEDIA módban Direct Key Listener
-			innerWebView.isFocusable = true
-			innerWebView.isFocusableInTouchMode = true
-			innerWebView.setOnKeyListener { _, keyCode, event ->
-				if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-					action(innerWebView)
-					true
-				} else {
-					false
+		override fun onPageFinished(view: WebView?, url: String?) {
+			if (loaded) return
+			loaded = true
+			view?.let { wv ->
+				// API küldés:
+				wv.evaluateJavascript(javaScript.addAPI + defaultAPI) {
+					// OnLoad:
+					onEventsCallback?.invoke(LOADED, url)
+					// Bar színek:
+					if (windowStyle == STYLE_EDGE_TO_EDGE) edgeToEdgeBarColors()
+					// Fade-in
+					wv.animate().alpha(1f).setDuration(600).startDelay = 0
 				}
 			}
 		}
 
-		innerWebView.webViewClient = object : WebViewClient() {
-
-			var loaded = true
-			override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-				super.onPageStarted(view, url, favicon)
-				if (!loaded) return
-				loaded = false
-				view?.let { wv ->
-					wv.alpha = 0f
-					onStart?.invoke(wv, url)
-				}
-			}
-
-			override fun onPageFinished(view: WebView?, url: String?) {
-				if (loaded) return
-				loaded = true
-				view?.let { wv ->
-					// API küldés:
-					wv.evaluateJavascript(javaScript.addAPI + defaultAPI) {
-						// OnLoad:
-						onLoad?.invoke(wv, url)
-						// Bar színek:
-						if (windowStyle == STYLE_EDGE_TO_EDGE) edgeToEdgeBarColors()
-						// Fade-in
-						wv.animate().alpha(1f).setDuration(600).startDelay = 0
-					}
-				}
-			}
-
-			override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-				val customResponse = view?.let { onIntercept?.invoke(it, request) }
-				if (customResponse != null) {
-					return customResponse
-				}
-				return super.shouldInterceptRequest(view, request)
-			}
-
-			override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
-				if (request?.isForMainFrame == true) {
-					view?.let { wv ->
-						wv.stopLoading()
-						onError?.invoke(wv)
-					}
+		override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+			request?.let { req ->
+				if (req.isForMainFrame) {
+					view?.stopLoading()
+					onEventsCallback?.invoke(ERROR, req.url.toString())
 				}
 			}
 		}
-
-		return this
 	}
 
 
@@ -827,6 +818,10 @@ class WebApp(
 		const val ETE_AUTO = 0
 		const val ETE_LIGHT = 1
 		const val ETE_DARK = 2
+		const val BACK = 0
+		const val STARTED = 1
+		const val LOADED = 2
+		const val ERROR = 3
 	}
 }
 // ----------- WebApp -----------
@@ -876,13 +871,15 @@ class WebAppMedia(
 	}
 
 	/**
-	 *	MediaEvent.START   -> { "onStart".log() }
-	 *	MediaEvent.PLAY    -> { "onPlay".log() }
-	 *	MediaEvent.PAUSE   -> { "onPause".log() }
-	 *	MediaEvent.PREV    -> { "onPrev".log() }
-	 *	MediaEvent.NEXT    -> { "onNext".log() }
-	 *	MediaEvent.CHANGED -> { "onChanged".log() }
-	 *	MediaEvent.STOP    -> { "onStop".log() }
+	 *	when (event) {
+	 *		MediaEvent.START   -> { "onStart".log() }
+	 *		MediaEvent.PLAY    -> { "onPlay".log() }
+	 *		MediaEvent.PAUSE   -> { "onPause".log() }
+	 *		MediaEvent.PREV    -> { "onPrev".log() }
+	 *		MediaEvent.NEXT    -> { "onNext".log() }
+	 *		MediaEvent.CHANGED -> { "onChanged".log() }
+	 *		MediaEvent.STOP    -> { "onStop".log() }
+	 *	}
 	 */
 	fun onEvent(callback: (event: Int) -> Unit) {
 		onEventsCallback = callback
@@ -1324,7 +1321,7 @@ class WebAppPlaybackService : MediaSessionService() {
 
 
 private var defaultAPI = """
-(function(wnd, doc, edgeToEdge = true) {
+(function(wnd, doc, edgeToEdge) {
 
 	if (wnd.newWebView) return;
 	wnd.newWebView = 1;
@@ -1404,7 +1401,7 @@ private var defaultAPI = """
 		wnd.setStatusBarAndNavigationBarHeight(obj.topHeight, obj.btmHeight);
 	}
 
-})(window, document);
+})(window, document, true);
 """.trimIndent()
 
 

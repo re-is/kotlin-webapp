@@ -1,7 +1,5 @@
 @file:Suppress("unused")
 
-package com.example.ytube
-
 import android.Manifest
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
@@ -603,16 +601,33 @@ class WebApp(
 	private var sampleBitmap: Bitmap? = null
 	private var sampleCanvas: Canvas? = null
 	private fun edgeToEdgeBarColors() {
+		val windowInsetsController = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
 
-		if (innerWebView.width > 0 && innerWebView.height > 0 &&
-			(edgeToEdge.statusBar.colorMode == ETE_AUTO || edgeToEdge.navigationBar.colorMode == ETE_AUTO)) {
+		val statusMode = edgeToEdge.statusBar.colorMode
+		val navMode = edgeToEdge.navigationBar.colorMode
 
+		var topLight = when (statusMode) {
+			ETE_DARK -> true
+			ETE_LIGHT -> false
+			else -> true
+		}
+		var btmLight = when (navMode) {
+			ETE_DARK -> true
+			ETE_LIGHT -> false
+			else -> true
+		}
+
+		val needsSampling = (statusMode == ETE_AUTO || navMode == ETE_AUTO) &&
+							innerWebView.width > 0 && innerWebView.height > 0
+
+		if (needsSampling) {
+			val targetHeight = innerWebView.height
 			val scrollX = innerWebView.scrollX.toFloat()
 			val scrollY = innerWebView.scrollY.toFloat()
-			val xOffset = -(scrollX + 300f)
-			val targetHeight = innerWebView.height
+			val xOffset = -(scrollX + (innerWebView.width / 2f))
 
 			if (sampleBitmap == null || sampleBitmap?.height != targetHeight) {
+				sampleBitmap?.recycle()
 				sampleBitmap = createBitmap(1, targetHeight, Bitmap.Config.RGB_565)
 				sampleCanvas = Canvas(sampleBitmap!!)
 			}
@@ -623,24 +638,21 @@ class WebApp(
 					innerWebView.draw(this)
 				}
 
-				val topColorLum = sampleBitmap!!.getColor(0, 40).luminance()
-				val btmColorLum = sampleBitmap!!.getColor(0, targetHeight - 60).luminance()
-
-				val windowInsetsController = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
-
-				when (edgeToEdge.statusBar.colorMode) {
-					ETE_LIGHT -> windowInsetsController.isAppearanceLightStatusBars = false
-					ETE_DARK -> windowInsetsController.isAppearanceLightStatusBars = true
-					else -> windowInsetsController.isAppearanceLightStatusBars = (topColorLum > 0.5)
-				}
-
-				when (edgeToEdge.navigationBar.colorMode) {
-					ETE_LIGHT -> windowInsetsController.isAppearanceLightNavigationBars = false
-					ETE_DARK -> windowInsetsController.isAppearanceLightNavigationBars = true
-					else -> windowInsetsController.isAppearanceLightNavigationBars = (btmColorLum > 0.5)
+				sampleBitmap?.let { bitmap ->
+					if (statusMode == ETE_AUTO) {
+						val topY = 40.coerceAtMost(targetHeight - 1)
+						topLight = bitmap.getColor(0, topY).luminance() > 0.5
+					}
+					if (navMode == ETE_AUTO) {
+						val btmY = (targetHeight - 60).coerceAtLeast(0).coerceAtMost(targetHeight - 1)
+						btmLight = bitmap.getColor(0, btmY).luminance() > 0.5
+					}
 				}
 			}
 		}
+
+		windowInsetsController.isAppearanceLightStatusBars = topLight
+		windowInsetsController.isAppearanceLightNavigationBars = btmLight
 	}
 
 
@@ -892,13 +904,13 @@ class WebAppMedia(
 	}
 
 	// Leállítás, onDestroy()
-	fun stop(destroyed: Boolean) {
+	fun stop(destroyed: Boolean? = false) {
 		if (WebAppPlaybackService.state < WebAppPlaybackService.CHANGED) return
 		onEventsCallback?.invoke(MediaEvent.STOP)
 		// Muszáj ez, mert a szerviz újra kiküldheti az értesítést, a pause miatt ! #3452453443
 		WebAppPlaybackService.state = when (destroyed) {
 			true -> WebAppPlaybackService.DESTROYED
-			false -> WebAppPlaybackService.STOPPED
+			else -> WebAppPlaybackService.STOPPED
 		}
 		// Utána leállítjuk a Service-t:
 		activity.stopService(
@@ -962,6 +974,7 @@ class WebAppMedia(
 				webview.requestFocus()
 				// App megnyitásakor még ne fusson le az onLoad miatt !
 				if (firstResumeSkipped) {
+					webview.evaluateJavascript("if (typeof androidFocus === 'function') androidFocus(true);", null)
 					// Zárt képernyő utáni visszatéréskor:
 					if (!screenOn) webview.alpha = 1f
 					else webview.animate()?.alpha(1f)?.setDuration(200)?.startDelay = 200
@@ -978,7 +991,8 @@ class WebAppMedia(
 						WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
 
 				activity.windowManager.updateViewLayout(webview, parameters)
-				webview.animate()?.alpha(0f)?.setDuration(200)?.startDelay = 0
+				webview.evaluateJavascript("if (typeof androidFocus === 'function') androidFocus(false);", null)
+				webview.animate()?.alpha(0f)?.setDuration(100)?.startDelay = 0
 			}
 		}
 	}
@@ -1015,7 +1029,7 @@ class WebAppPlaybackService : MediaSessionService() {
 	private val channelId = "WebAppMediaPlayback"
 	private var sendedNotify = false
 	private var activeColor = 0
-	private val inactiveColor = "#999999".toColorInt()
+	private var inactiveColor = 0
 	private var played = false
 
 	private fun sendToWebApp(action: String) {
@@ -1178,8 +1192,9 @@ class WebAppPlaybackService : MediaSessionService() {
 		canvas.drawCircle(size / 2f, size / 2f, size / 2.5f, paint)
 		smallIcon = IconCompat.createWithBitmap(bitmap)
 
-		// Nyil színek:
+		// Gomb színek:
 		activeColor = if (isSystemLightMode(this)) "#333333".toColorInt() else "#eeeeee".toColorInt()
+		inactiveColor = (activeColor and 0x00FFFFFF) or (70 shl 24)
 
 		listener = object : Player.Listener {
 			override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -1370,16 +1385,16 @@ private var defaultAPI = """
 		};
 
 		if (obj.topBlur || obj.btmBlur) {
-			const css = 'position:fixed; width: 100vw; left:0; backdrop-filter:blur(10px); z-index:2000;';
+			const css = 'position:fixed; width:100vw; left:0; backdrop-filter:blur(20px); z-index:2000;';
 
 			const blurredTop = doc.createElement('div').apply((it) => {
 				it.id = 'android-top-blurred-overlay';
-				it.setAttribute('style', css + 'top:0;');
+				it.setAttribute('style', css + 'top:0;mask-image:linear-gradient(to bottom,black 0%,black 80%,transparent 100%);');
 			});
 
 			const blurredBtm = doc.createElement('div').apply((it) => {
 				it.id = 'android-btm-blurred-overlay';
-				it.setAttribute('style', css + 'bottom:0;');
+				it.setAttribute('style', css + 'bottom:0;mask-image:linear-gradient(to top,black 0%,black 70%,transparent 100%);');
 			});
 
 			doc.body.appendChild(blurredTop);
@@ -1400,80 +1415,65 @@ private var defaultAPI = """
 	notification.xml layout:
 
 <?xml version="1.0" encoding="utf-8"?>
-<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
+    style="?android:attr/buttonBarStyle"
     android:layout_width="match_parent"
     android:layout_height="50dp"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
     tools:ignore="TextSizeCheck">
 
-    <LinearLayout
-        style="?android:attr/buttonBarStyle"
-        android:layout_width="match_parent"
+    <Button
+        android:id="@+id/media_prev"
+        style="?android:attr/buttonBarButtonStyle"
+        android:layout_width="0dp"
         android:layout_height="match_parent"
-        android:layout_marginTop="-5dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        tools:ignore="VisualLintBounds">
+        android:layout_weight="1"
+        android:paddingTop="0dp"
+        android:paddingBottom="5dp"
+        android:text="⏮"
+        android:textSize="25sp"
+        tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
 
-        <Button
-            android:id="@+id/media_prev"
-            style="?android:attr/buttonBarButtonStyle"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:paddingTop="0dp"
-            android:paddingBottom="5dp"
-            android:text="⏮"
-            android:textSize="25sp"
-            tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
+    <Button
+        android:id="@+id/media_play"
+        style="?android:attr/buttonBarButtonStyle"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:paddingTop="0dp"
+        android:paddingBottom="5dp"
+        android:text="▶"
+        android:textSize="30sp"
+        tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
 
-        <Button
-            android:id="@+id/media_play"
-            style="?android:attr/buttonBarButtonStyle"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:paddingTop="0dp"
-            android:paddingBottom="5dp"
-            android:text="▶"
-            android:textSize="30sp"
-            tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
+    <Button
+        android:id="@+id/media_pause"
+        style="?android:attr/buttonBarButtonStyle"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:paddingTop="0dp"
+        android:paddingBottom="0dp"
+        android:text="II"
+        android:textFontWeight="1000"
+        android:textSize="25sp"
+        tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
 
-        <Button
-            android:id="@+id/media_pause"
-            style="?android:attr/buttonBarButtonStyle"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:paddingTop="0dp"
-            android:paddingBottom="0dp"
-            android:text="II"
-            android:textFontWeight="1000"
-            android:textSize="25sp"
-            tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
+    <Button
+        android:id="@+id/media_next"
+        style="?android:attr/buttonBarButtonStyle"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:paddingTop="0dp"
+        android:paddingBottom="5dp"
+        android:text="⏭"
+        android:textSize="25sp"
+        tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
 
-        <Button
-            android:id="@+id/media_next"
-            style="?android:attr/buttonBarButtonStyle"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:paddingTop="0dp"
-            android:paddingBottom="5dp"
-            android:text="⏭"
-            android:textSize="25sp"
-            tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
-
-    </LinearLayout>
-
-    <LinearLayout
-        android:id="@+id/bottom_line"
-        android:layout_width="match_parent"
-        android:layout_height="3dp"
-        android:layout_alignParentBottom="true"
-        android:background="#CC3333"
-        android:orientation="horizontal" />
-
-</RelativeLayout>
+</LinearLayout>
 
 */

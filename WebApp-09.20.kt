@@ -919,7 +919,12 @@ class WebAppMedia(
 		// Service:
 		if (fromService == true) onEventsCallback?.invoke(MediaEvent.PLAY)
 		// Activity:
-		else sendToService(KeyEvent.KEYCODE_MEDIA_PLAY)
+		else {
+			if (WebAppPlaybackService.state == WebAppPlaybackService.CHANGED)
+				WebAppPlaybackService.state = WebAppPlaybackService.ACTIVE
+
+			sendToService(KeyEvent.KEYCODE_MEDIA_PLAY)
+		}
 	}
 
 	fun pause(fromService: Boolean? = false) {
@@ -1146,6 +1151,7 @@ class WebAppPlaybackService : MediaSessionService() {
 							if (state == CHANGED) return true
 							state = CHANGED						// 1 #34534535
 							mediaSession?.player?.pause()		// 2
+							mediaSession?.player?.seekTo(0, 0)
 							updateNotification(true)
 							sendToWebApp(WebApp.SERVICE_MEDIA_PREV)
 							return true
@@ -1154,6 +1160,7 @@ class WebAppPlaybackService : MediaSessionService() {
 							if (state == CHANGED) return true
 							state = CHANGED
 							mediaSession?.player?.pause()
+							mediaSession?.player?.seekTo(0, 0)
 							updateNotification(true)
 							sendToWebApp(WebApp.SERVICE_MEDIA_NEXT)
 							return true
@@ -1326,35 +1333,7 @@ private var defaultAPI = """
 	if (wnd.newWebView) return;
 	wnd.newWebView = 1;
 
-	if (typeof Object.prototype.params !== 'function')
-		Object.defineProperty(Object.prototype, 'params', {
-			value: function(object) {
-				if (object && typeof object === 'object') {
-					for (const key in object) {
-						if (Object.prototype.hasOwnProperty.call(object, key)) {
-							this[key] = object[key];
-						}
-					}
-				}
-				return this;
-			},
-			writable: true,
-			configurable: true
-		});
-
-	if (typeof Element.prototype.apply !== 'function')
-		Object.defineProperty(Element.prototype, 'apply', {
-			value: function(block) {
-				if (typeof block === 'function') {
-					block.call(this, this);
-				}
-				return this;
-			},
-			writable: true,
-			configurable: true
-		});
-
-
+	if(typeof Object.prototype.params!=='function')Object.defineProperty(Object.prototype,'params',{value:function(o){if(o&&typeof o==='object'){for(const k in o){if(Object.prototype.hasOwnProperty.call(o,k)){this[k]=o[k]}}}return this},writable:true,configurable:true});if(typeof Element.prototype.apply!=='function')Object.defineProperty(Element.prototype,'apply',{value:function(b){if(typeof b==='function'){const r=b.call(this,this);if(r!==undefined)return r}return this},writable:true,configurable:true});
 
 	const meta = doc.createElement('meta').params({
 		name: 'viewport',

@@ -282,7 +282,7 @@ class WebApp(
 				}
 			}
 
-			bluetoothEventCallback?.invoke("none")
+			bluetoothEventCallback?.invoke("")
 		}
 	}
 
@@ -385,6 +385,10 @@ class WebApp(
 	fun onEvent(callback: (event: Int, url: String?) -> Unit) {
 		onEventsCallback = callback
 	}
+
+
+
+
 
 
 

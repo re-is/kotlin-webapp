@@ -602,6 +602,7 @@ class WebApp(
 							"document, true",
 							"document, ${(windowStyle == STYLE_EDGE_TO_EDGE)}"
 						)
+						.replace("\\{", "{")
 
 					started = true
 				}
@@ -1337,7 +1338,7 @@ private var defaultAPI = """
 	if (wnd.newWebView) return;
 	wnd.newWebView = 1;
 
-	if(typeof Object.prototype.params!=='function')Object.defineProperty(Object.prototype,'params',{value:function(o){if(o&&typeof o==='object'){for(const k in o){if(Object.prototype.hasOwnProperty.call(o,k)){this[k]=o[k]}}}return this},writable:true,configurable:true});if(typeof Element.prototype.apply!=='function')Object.defineProperty(Element.prototype,'apply',{value:function(b){if(typeof b==='function'){const r=b.call(this,this);if(r!==undefined)return r}return this},writable:true,configurable:true});
+	const log=t=>{const e=Date.now();console.log(`:$\{Math.floor(e/1e3)%60}.$\{e%1e3}	| $\{t}`)};window.trustedTypes&&!window.trustedTypes.defaultPolicy&&window.trustedTypes.createPolicy('default',{createHTML:s=>s,createScriptURL:s=>s});function newJsSrc(u){return window.trustedTypes?window.trustedTypes.defaultPolicy.createScriptURL(u):u}function newHTML(t){return window.trustedTypes?window.trustedTypes.defaultPolicy.createHTML(t):t}typeof Object.prototype.params!=='function'&&Object.defineProperty(Object.prototype,'params',{value:function(o){if(o&&typeof o==='object')Object.assign(this,o);return this},writable:!0,configurable:!0});typeof Element.prototype.apply!=='function'&&Object.defineProperty(Element.prototype,'apply',{value:function(b){return typeof b==='function'?b.call(this,this)??this:this},writable:!0,configurable:!0});
 
 	const meta = doc.createElement('meta').params({
 		name: 'viewport',
@@ -1367,14 +1368,14 @@ private var defaultAPI = """
 		if (obj.topBlur || obj.btmBlur) {
 			const css = 'position:fixed; width:100vw; left:0; backdrop-filter:blur(20px); z-index:2000;';
 
-			const blurredTop = doc.createElement('div').apply((it) => {
-				it.id = 'android-top-blurred-overlay';
-				it.setAttribute('style', css + 'top:0;mask-image:linear-gradient(to bottom,black 0%,black 80%,transparent 100%);');
+			const blurredTop = doc.createElement('div').apply(top => {
+				top.id = 'android-top-blurred-overlay';
+				top.setAttribute('style', css + 'top:0;mask-image:linear-gradient(to bottom,black 0%,black 80%,transparent 100%);');
 			});
 
-			const blurredBtm = doc.createElement('div').apply((it) => {
-				it.id = 'android-btm-blurred-overlay';
-				it.setAttribute('style', css + 'bottom:0;mask-image:linear-gradient(to top,black 0%,black 70%,transparent 100%);');
+			const blurredBtm = doc.createElement('div').apply(btm => {
+				btm.id = 'android-btm-blurred-overlay';
+				btm.setAttribute('style', css + 'bottom:0;mask-image:linear-gradient(to top,black 0%,black 70%,transparent 100%);');
 			});
 
 			doc.body.appendChild(blurredTop);

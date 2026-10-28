@@ -602,7 +602,6 @@ class WebApp(
 							"document, true",
 							"document, ${(windowStyle == STYLE_EDGE_TO_EDGE)}"
 						)
-						.replace("\\{", "{")
 
 					started = true
 				}
@@ -1335,55 +1334,50 @@ class WebAppPlaybackService : MediaSessionService() {
 private var defaultAPI = """
 (function(wnd, doc, edgeToEdge) {
 
-	if (wnd.newWebView) return;
-	wnd.newWebView = 1;
+	if (wnd.webAppWebView) return;
+	wnd.webAppWebView = 1;
 
-	const log=t=>{const e=Date.now();console.log(`:$\{Math.floor(e/1e3)%60}.$\{e%1e3}	| $\{t}`)};window.trustedTypes&&!window.trustedTypes.defaultPolicy&&window.trustedTypes.createPolicy('default',{createHTML:s=>s,createScriptURL:s=>s});function newJsSrc(u){return window.trustedTypes?window.trustedTypes.defaultPolicy.createScriptURL(u):u}function newHTML(t){return window.trustedTypes?window.trustedTypes.defaultPolicy.createHTML(t):t}typeof Object.prototype.params!=='function'&&Object.defineProperty(Object.prototype,'params',{value:function(o){if(o&&typeof o==='object')Object.assign(this,o);return this},writable:!0,configurable:!0});typeof Element.prototype.apply!=='function'&&Object.defineProperty(Element.prototype,'apply',{value:function(b){return typeof b==='function'?b.call(this,this)??this:this},writable:!0,configurable:!0});
+	typeof Object.prototype.params!=='function'&&Object.defineProperty(Object.prototype,'params',{value:function(o){if(o&&typeof o==='object')Object.assign(this,o);return this},writable:!0,configurable:!0});typeof Element.prototype.apply!=='function'&&Object.defineProperty(Element.prototype,'apply',{value:function(b){return typeof b==='function'?b.call(this,this)??this:this},writable:!0,configurable:!0});
 
-	const meta = doc.createElement('meta').params({
-		name: 'viewport',
-		content: 'width=device-width, initial-scale=1.0, user-scalable=no'
-	});
-
-	doc.head.appendChild(meta);
-
+	doc.head.appendChild(
+		doc.createElement('meta').params({
+			name: 'viewport',
+			content: 'width=device-width, initial-scale=1.0, user-scalable=no'
+		})
+	);
 
 	wnd.addEventListener('touchmove', (e) => {
 		if (e.touches[0].clientY > (wnd.screen.height * 0.93)) e.preventDefault();
 	}, { passive: false });
 
+	if (!edgeToEdge) return;
 
-	if (edgeToEdge) {
+	const obj = { topBlur:true, btmBlur:true, topHeight:50, btmHeight:100 };
+	const css = 'position:fixed; width:100vw; left:0; backdrop-filter:blur(20px); z-index:2000;';
 
-		const obj = { topBlur:true, btmBlur:true, topHeight:50, btmHeight:100 };
+	wnd.setStatusBarAndNavigationBarHeight = (topH, btmH) => {
 
-		wnd.setStatusBarAndNavigationBarHeight = function(topH, btmH) {
+		if (obj.topBlur) doc.getElementById('android-top-blurred-overlay').style.height = topH + 'px';
+		if (obj.btmBlur) doc.getElementById('android-btm-blurred-overlay').style.height = btmH + 'px';
 
-			if (obj.topBlur) doc.getElementById('android-top-blurred-overlay').style.height = topH + 'px';
-			if (obj.btmBlur) doc.getElementById('android-btm-blurred-overlay').style.height = btmH + 'px';
+		if (typeof androidEdgeToEdge === 'function') androidEdgeToEdge(topH, btmH);
+	};
 
-			if (typeof androidEdgeToEdge === 'function') androidEdgeToEdge(topH, btmH);
-		};
-
-		if (obj.topBlur || obj.btmBlur) {
-			const css = 'position:fixed; width:100vw; left:0; backdrop-filter:blur(20px); z-index:2000;';
-
-			const blurredTop = doc.createElement('div').apply(top => {
+	if (obj.topBlur) doc.body.appendChild(
+			doc.createElement('div').apply(top => {
 				top.id = 'android-top-blurred-overlay';
 				top.setAttribute('style', css + 'top:0;mask-image:linear-gradient(to bottom,black 0%,black 80%,transparent 100%);');
-			});
+			})
+		);
 
-			const blurredBtm = doc.createElement('div').apply(btm => {
+	if (obj.btmBlur) doc.body.appendChild(
+			doc.createElement('div').apply(btm => {
 				btm.id = 'android-btm-blurred-overlay';
 				btm.setAttribute('style', css + 'bottom:0;mask-image:linear-gradient(to top,black 0%,black 70%,transparent 100%);');
-			});
-
-			doc.body.appendChild(blurredTop);
-			doc.body.appendChild(blurredBtm);
-		}
-
-		wnd.setStatusBarAndNavigationBarHeight(obj.topHeight, obj.btmHeight);
-	}
+			})
+		);
+	
+	wnd.setStatusBarAndNavigationBarHeight(obj.topHeight, obj.btmHeight);
 
 })(window, document, true);
 """.trimIndent()

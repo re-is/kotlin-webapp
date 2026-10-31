@@ -515,7 +515,7 @@ class WebApp(
 			webViewParams = WindowManager.LayoutParams().apply {
 				type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
 				format = PixelFormat.TRANSLUCENT
-				gravity = (Gravity.TOP or Gravity.START)
+				gravity = Gravity.TOP or Gravity.START
 				flags = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
 
 				// NORMAL stílus:
@@ -556,8 +556,8 @@ class WebApp(
 		}
 
 
-		var started = false
-		fun updateHeights(insets: WindowInsetsCompat) {
+
+		fun updateHeightsKotlin(insets: WindowInsetsCompat) {
 			val statusHeight = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top.toFloat()
 			val navigHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom.toFloat()
 
@@ -565,19 +565,21 @@ class WebApp(
 			edgeToEdge.navigationBar.height = if (navigHeight == 0f) 0 else (navigHeight / dpiScale).toInt()
 		}
 
-		val updateJS = Runnable {
+		val updateHeightsJavascript = Runnable {
 			innerWebView.evaluateJavascript("window.setStatusBarAndNavigationBarHeight(${edgeToEdge.statusBar.height}, ${edgeToEdge.navigationBar.height});", null)
 		}
 
 		// Rendszersávok méretei:
+		var started = false
 		ViewCompat.setOnApplyWindowInsetsListener(innerWebView) { _, insets ->
 			// Ha van magasság:
 			if (innerWebView.height > 0) {
 
 				if (!started) {
+					started = true
 
 					if (windowStyle == STYLE_EDGE_TO_EDGE) {
-						updateHeights(insets)
+						updateHeightsKotlin(insets)
 					}
 					else {
 						edgeToEdge.statusBar.apply {
@@ -590,9 +592,6 @@ class WebApp(
 						}
 					}
 
-					/* Ez csak kísérletezéshez kell:*/
-					//defaultAPI = readAssetFile("barHeights.js")
-
 					defaultAPI = defaultAPI
 						.replace(
 							"obj = { topBlur:true, btmBlur:true, topHeight:50, btmHeight:100 }",
@@ -602,25 +601,24 @@ class WebApp(
 							"document, true",
 							"document, ${(windowStyle == STYLE_EDGE_TO_EDGE)}"
 						)
-
-					started = true
 				}
 				// Elforgatáskor:
-				else if (windowType == TYPE_MEDIA && windowStyle > STYLE_NORMAL) {
-					display = activity.windowManager.currentWindowMetrics.bounds
-					if (webViewParams.width != display.width()) {
-						webViewParams.apply {
-							width = display.width()
-							height = display.height()
+				else if (windowStyle > STYLE_NORMAL) {
+					if (windowType == TYPE_MEDIA) {
+						display = activity.windowManager.currentWindowMetrics.bounds
+						if (webViewParams.width != display.width()) {
+							webViewParams.apply {
+								width = display.width()
+								height = display.height()
+							}
+							activity.windowManager.updateViewLayout(innerWebView, webViewParams)
 						}
-						activity.windowManager.updateViewLayout(innerWebView, webViewParams)
 					}
-					updateHeights(insets)
-					// Magasságok frissítése és újraküldése
-					// Az androidEdgeToEdge(topH, btmH) is lefut !
+					updateHeightsKotlin(insets)
+					// androidEdgeToEdge(topH, btmH)
 					if (windowStyle == STYLE_EDGE_TO_EDGE) {
-						MAIN_LOOPER.removeCallbacks(updateJS)
-						MAIN_LOOPER.postDelayed(updateJS, 100)
+						MAIN_LOOPER.removeCallbacks(updateHeightsJavascript)
+						MAIN_LOOPER.postDelayed(updateHeightsJavascript, 100)
 					}
 				}
 			}
@@ -967,23 +965,32 @@ class WebAppMedia(
 		if (Settings.canDrawOverlays(activity)) parameters?.let { params ->
 			// onResume:
 			if (isTopResumedActivity) {
-				// "Elforgatás a háttérben" miatt:
+
+				webview.apply {
+					isClickable = true
+					isFocusable = true
+					isFocusableInTouchMode = true
+					requestFocus()
+				}
+
 				val display = activity.windowManager.currentWindowMetrics.bounds
+				params.horizontalMargin = 0.0f
 				params.width = display.width()
 				params.height = display.height()
 				params.flags = params.flags and (
 						WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-						WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+						WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+						WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
 				).inv()
 
-				activity.windowManager.updateViewLayout(webview, parameters)
-				webview.requestFocus()
+				activity.windowManager.updateViewLayout(webview, params)
+
 				// App megnyitásakor még ne fusson le az onLoad miatt !
 				if (firstResumeSkipped) {
 					webview.evaluateJavascript("if (typeof androidFocus === 'function') androidFocus(true);", null)
 					// Zárt képernyő utáni visszatéréskor:
 					if (!screenOn) webview.alpha = 1f
-					else webview.animate()?.alpha(1f)?.setDuration(200)?.startDelay = 200
+					else webview.animate().alpha(1f).setDuration(200).startDelay = 200
 				}
 				// Első onResume átugrása:
 				else firstResumeSkipped = true
@@ -992,13 +999,23 @@ class WebAppMedia(
 			else {
 				screenOn = powerManager.isInteractive
 
-				params.flags = params.flags or
-						WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-						WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+				webview.apply {
+					isClickable = false
+					isFocusable = false
+					isFocusableInTouchMode = false
+					evaluateJavascript("if (typeof androidFocus === 'function') androidFocus(false);", null)
+					animate().alpha(0f).setDuration(200).startDelay = 0
+				}
 
-				activity.windowManager.updateViewLayout(webview, parameters)
-				webview.evaluateJavascript("if (typeof androidFocus === 'function') androidFocus(false);", null)
-				webview.animate()?.alpha(0f)?.setDuration(100)?.startDelay = 0
+				MAIN_LOOPER.postDelayed({
+					params.horizontalMargin = -1.0f
+					params.flags = params.flags or
+							WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+							WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+							WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+
+					activity.windowManager.updateViewLayout(webview, params)
+				}, 200)
 			}
 		}
 	}

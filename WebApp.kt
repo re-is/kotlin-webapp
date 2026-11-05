@@ -1,7 +1,5 @@
 @file:Suppress("unused")
 
-package com.example.ytube
-
 import android.Manifest
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
@@ -1199,8 +1197,6 @@ class WebAppPlaybackService : MediaSessionService() {
 				else if (isPlaying) state = ACTIVE
 				// STARTED + ACTIVE
 				played = isPlaying
-				// Vissza az elejére:
-				mediaSession?.player?.seekTo(0, 0)
 				updateNotification(true)
 			}
 		}
@@ -1362,74 +1358,3 @@ private var defaultAPI = """
 
 })(window, document, true);
 """.trimIndent()
-
-
-
-
-/*
-
-	notification.xml layout:
-
-<?xml version="1.0" encoding="utf-8"?>
-<LinearLayout
-    xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
-    style="?android:attr/buttonBarStyle"
-    android:layout_width="match_parent"
-    android:layout_height="50dp"
-    android:gravity="center_vertical"
-    android:orientation="horizontal"
-    tools:ignore="TextSizeCheck">
-
-    <Button
-        android:id="@+id/media_prev"
-        style="?android:attr/buttonBarButtonStyle"
-        android:layout_width="0dp"
-        android:layout_height="match_parent"
-        android:layout_weight="1"
-        android:paddingTop="0dp"
-        android:paddingBottom="5dp"
-        android:text="⏮"
-        android:textSize="25sp"
-        tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
-
-    <Button
-        android:id="@+id/media_play"
-        style="?android:attr/buttonBarButtonStyle"
-        android:layout_width="0dp"
-        android:layout_height="match_parent"
-        android:layout_weight="1"
-        android:paddingTop="0dp"
-        android:paddingBottom="5dp"
-        android:text="▶"
-        android:textSize="30sp"
-        tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
-
-    <Button
-        android:id="@+id/media_pause"
-        style="?android:attr/buttonBarButtonStyle"
-        android:layout_width="0dp"
-        android:layout_height="match_parent"
-        android:layout_weight="1"
-        android:paddingTop="0dp"
-        android:paddingBottom="0dp"
-        android:text="II"
-        android:textFontWeight="1000"
-        android:textSize="25sp"
-        tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
-
-    <Button
-        android:id="@+id/media_next"
-        style="?android:attr/buttonBarButtonStyle"
-        android:layout_width="0dp"
-        android:layout_height="match_parent"
-        android:layout_weight="1"
-        android:paddingTop="0dp"
-        android:paddingBottom="5dp"
-        android:text="⏭"
-        android:textSize="25sp"
-        tools:ignore="HardcodedText,VisualLintButtonSize,VisualLintSystemUi" />
-
-</LinearLayout>
-
-*/

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:tools="http://schemas.android.com/tools"
+    xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Mindenhez -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- TYPE_MEDIA -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:ignore="ForegroundServicesPolicy" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- http engedélyezés -->
+    <application
+        android:hardwareAccelerated="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.WebApp">
+
+        <!-- Nem reagál ezekre -->
+        <activity
+            android:configChanges="orientation|screenSize|keyboardHidden"
+ 			android:windowSoftInputMode="adjustNothing">
+
+        </activity>
+
+        <!-- TYPE_MEDIA -->
+        <service
+ 			android:name=".WebAppPlaybackService"
+ 			android:exported="false"
+ 			android:foregroundServiceType="mediaPlayback">
+ 			<intent-filter>
+ 				<action android:name="androidx.media3.session.MediaSessionService" />
+ 			</intent-filter>
+ 		</service>
+
+    </application>
+
+</manifest>

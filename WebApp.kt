@@ -586,9 +586,9 @@ class WebApp(
 							activity.windowManager.updateViewLayout(innerWebView, webViewParams)
 						}
 					}
-					updateHeightsKotlin(insets)
 					// androidEdgeToEdge(topH, btmH)
 					if (windowStyle == STYLE_EDGE_TO_EDGE) {
+						updateHeightsKotlin(insets)
 						MAIN_LOOPER.removeCallbacks(updateHeightsJavascript)
 						MAIN_LOOPER.postDelayed(updateHeightsJavascript, 100)
 					}

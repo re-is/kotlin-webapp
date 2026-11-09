@@ -30,8 +30,9 @@
         <!-- TYPE_MEDIA -->
         <service
  			android:name=".WebAppPlaybackService"
- 			android:exported="false"
- 			android:foregroundServiceType="mediaPlayback">
+ 			android:exported="true"
+ 			android:foregroundServiceType="mediaPlayback"
+            tools:ignore="ExportedService">
  			<intent-filter>
  				<action android:name="androidx.media3.session.MediaSessionService" />
  			</intent-filter>

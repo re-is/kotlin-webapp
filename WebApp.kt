@@ -781,7 +781,7 @@ class WebApp(
 		try { innerWebView.destroy() } catch (_: Throwable) {}
 
 		// Maradék:
-		MAIN_LOOPER.postDelayed({ Runtime.getRuntime().exit(0) }, 300)
+		MAIN_LOOPER.postDelayed({ Runtime.getRuntime().exit(0) }, 500)
 	}
 
 	companion object {
@@ -832,6 +832,7 @@ class WebAppMedia(
 	private val powerManager = activity.getSystemService(POWER_SERVICE) as PowerManager
 	private var firstResumeSkipped = false
 	private var screenOn = false
+	private var isFocusabled = false
 
 	private fun sendToService(keyCode: Int) {
 		if (WebAppPlaybackService.state < WebAppPlaybackService.STARTED) return
@@ -884,10 +885,6 @@ class WebAppMedia(
 			true -> WebAppPlaybackService.DESTROYED
 			else -> WebAppPlaybackService.STOPPED
 		}
-		// Utána leállítjuk a Service-t:
-		activity.stopService(
-			Intent(activity, WebAppPlaybackService::class.java)
-		)
 	}
 
 	fun play(fromService: Boolean? = false) {
@@ -939,10 +936,6 @@ class WebAppMedia(
 	 */
 	fun windowPause() {
 		WebApp.FOCUS = false
-		parameters?.let { params ->
-			params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-			activity.windowManager.updateViewLayout(webview, params)
-		}
 		windowFocusChange(false)
 	}
 
@@ -953,6 +946,7 @@ class WebAppMedia(
 		if (Settings.canDrawOverlays(activity)) parameters?.let { params ->
 			// onResume:
 			if (hasFocus) {
+				isFocusabled = true
 
 				webview.isClickable = true
 
@@ -978,7 +972,9 @@ class WebAppMedia(
 				else firstResumeSkipped = true
 			}
 			// OnPause:
-			else if (!WebApp.FOCUS) {
+			else if (!WebApp.FOCUS && isFocusabled) {
+				isFocusabled = false
+
 				screenOn = powerManager.isInteractive
 
 				webview.apply {
@@ -990,6 +986,7 @@ class WebAppMedia(
 				MAIN_LOOPER.postDelayed({
 					params.horizontalMargin = -1.0f
 					params.flags = params.flags or
+							WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
 							WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
 							WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
 

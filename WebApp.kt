@@ -132,6 +132,7 @@ class WebApp(
 
 	class JsClass(private val webview: WebView, private val dpi: Float) {
 		private var commandCallback: ((id: String, params: List<String>) -> Unit)? = null
+		private var changeFocusCallback: ((Boolean) -> Unit)? = null
 
 		val javascriptInterface = object {
 			@JavascriptInterface
@@ -140,9 +141,15 @@ class WebApp(
 					val params = value.split(",")
 						.map { it.trim() }
 						.filter { it.isNotEmpty() }
-					commandCallback?.invoke(id, params)
+
+					if (id == "kotlinFocusChanged") changeFocusCallback?.invoke(value.toBoolean())
+					else commandCallback?.invoke(id, params)
 				}
 			}
+		}
+
+		fun focusChanged(callback: ((Boolean) -> Unit)) {
+			changeFocusCallback = callback
 		}
 
 		/**
@@ -342,6 +349,14 @@ class WebApp(
 		if (innerWebView.canGoBack()) innerWebView.goBack()
 	}
 
+	/**
+	 *	when (event) {
+	 *		WebApp.BACK     -> { "onBack".log() }
+	 *		WebApp.STARTED  -> { "onStart".log() }
+	 *		WebApp.LOADED   -> { "onLoad".log() }
+	 *		WebApp.ERROR    -> { "onError".log() }
+	 *	}
+	 */
 	fun onEvent(callback: (event: Int, url: String?) -> Unit) {
 		onEventsCallback = callback
 	}
@@ -446,6 +461,7 @@ class WebApp(
 
 
 
+
 		// TYPE_NORMAL
 		if (windowType == TYPE_NORMAL) {
 			val param = ViewGroup.LayoutParams(
@@ -455,14 +471,6 @@ class WebApp(
 
 			// WebView hozzáadás:
 			activity.addContentView(innerWebView, param)
-
-			// Back észlelés:
-			val callback = object : OnBackPressedCallback(true) {
-				override fun handleOnBackPressed() {
-					onEventsCallback?.invoke(BACK, null)
-				}
-			}
-			activity.onBackPressedDispatcher.addCallback(activity, callback)
 		}
 		// TYPE_MEDIA
 		else {
@@ -486,6 +494,7 @@ class WebApp(
 				// Nagyméretű ablak:
 				else {
 					flags = (flags or
+							WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
 							WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
 							WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN)
 
@@ -502,18 +511,21 @@ class WebApp(
 			// Params átküldése Media-ba:
 			media.params(webViewParams)
 
-			// Back észlelés:
-			innerWebView.isFocusable = true
-			innerWebView.isFocusableInTouchMode = true
-			innerWebView.setOnKeyListener { _, keyCode, event ->
-				if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-					onEventsCallback?.invoke(BACK, null)
-					true
-				} else {
-					false
+			javaScript.focusChanged { focus ->
+				if (focus) {
+					// Webview focusba!
+					FOCUS = true
+					webViewParams.flags = webViewParams.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
 				}
+				else {
+					// Activity focusba!
+					FOCUS = false
+					webViewParams.flags = webViewParams.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+				}
+				activity.windowManager.updateViewLayout(innerWebView, webViewParams)
 			}
 		}
+
 
 
 
@@ -585,6 +597,15 @@ class WebApp(
 
 			insets
 		}
+
+
+		// Back észlelés:
+		val callback = object : OnBackPressedCallback(true) {
+			override fun handleOnBackPressed() {
+				onEventsCallback?.invoke(BACK, null)
+			}
+		}
+		activity.onBackPressedDispatcher.addCallback(activity, callback)
 
 		return this
 	}
@@ -764,6 +785,7 @@ class WebApp(
 	}
 
 	companion object {
+		var FOCUS = false
 		const val TYPE_NORMAL = 0
 		const val TYPE_MEDIA = 1
 		const val STYLE_NORMAL = 0
@@ -799,15 +821,6 @@ class WebApp(
 
 
 
-object MediaEvent {
-	const val START		= 0
-	const val PLAY		= 1
-	const val PAUSE		= 2
-	const val PREV		= 3
-	const val NEXT		= 4
-	const val CHANGED	= 5
-	const val STOP		= 6
-}
 
 class WebAppMedia(
 	private val activity: ComponentActivity,
@@ -834,13 +847,13 @@ class WebAppMedia(
 
 	/**
 	 *	when (event) {
-	 *		MediaEvent.START   -> { "onStart".log() }
-	 *		MediaEvent.PLAY    -> { "onPlay".log() }
-	 *		MediaEvent.PAUSE   -> { "onPause".log() }
-	 *		MediaEvent.PREV    -> { "onPrev".log() }
-	 *		MediaEvent.NEXT    -> { "onNext".log() }
-	 *		MediaEvent.CHANGED -> { "onChanged".log() }
-	 *		MediaEvent.STOP    -> { "onStop".log() }
+	 *		WebAppMedia.START   -> { "onStart".log() }
+	 *		WebAppMedia.PLAY    -> { "onPlay".log() }
+	 *		WebAppMedia.PAUSE   -> { "onPause".log() }
+	 *		WebAppMedia.PREV    -> { "onPrev".log() }
+	 *		WebAppMedia.NEXT    -> { "onNext".log() }
+	 *		WebAppMedia.CHANGED -> { "onChanged".log() }
+	 *		WebAppMedia.STOP    -> { "onStop".log() }
 	 *	}
 	 */
 	fun onEvent(callback: (event: Int) -> Unit) {
@@ -849,7 +862,7 @@ class WebAppMedia(
 
 	// Ez csak a receiverből fut:
 	fun started() {
-		onEventsCallback?.invoke(MediaEvent.START)
+		onEventsCallback?.invoke(START)
 	}
 
 
@@ -865,7 +878,7 @@ class WebAppMedia(
 	// Leállítás, onDestroy()
 	fun stop(destroyed: Boolean? = false) {
 		if (WebAppPlaybackService.state < WebAppPlaybackService.CHANGED) return
-		onEventsCallback?.invoke(MediaEvent.STOP)
+		onEventsCallback?.invoke(STOP)
 		// Muszáj ez, mert a szerviz újra kiküldheti az értesítést, a pause miatt ! #3452453443
 		WebAppPlaybackService.state = when (destroyed) {
 			true -> WebAppPlaybackService.DESTROYED
@@ -879,7 +892,7 @@ class WebAppMedia(
 
 	fun play(fromService: Boolean? = false) {
 		// Service:
-		if (fromService == true) onEventsCallback?.invoke(MediaEvent.PLAY)
+		if (fromService == true) onEventsCallback?.invoke(PLAY)
 		// Activity:
 		else {
 			if (WebAppPlaybackService.state == WebAppPlaybackService.CHANGED)
@@ -890,22 +903,22 @@ class WebAppMedia(
 	}
 
 	fun pause(fromService: Boolean? = false) {
-		if (fromService == true) onEventsCallback?.invoke(MediaEvent.PAUSE)
+		if (fromService == true) onEventsCallback?.invoke(PAUSE)
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PAUSE)
 	}
 
 	fun prev(fromService: Boolean? = false) {
 		if (fromService == true) {
-			onEventsCallback?.invoke(MediaEvent.CHANGED)
-			onEventsCallback?.invoke(MediaEvent.PREV)
+			onEventsCallback?.invoke(CHANGED)
+			onEventsCallback?.invoke(PREV)
 		}
 		else sendToService(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
 	}
 
 	fun next(fromService: Boolean? = false) {
 		if (fromService == true) {
-			onEventsCallback?.invoke(MediaEvent.CHANGED)
-			onEventsCallback?.invoke(MediaEvent.NEXT)
+			onEventsCallback?.invoke(CHANGED)
+			onEventsCallback?.invoke(NEXT)
 		}
 		else sendToService(KeyEvent.KEYCODE_MEDIA_NEXT)
 	}
@@ -921,24 +934,33 @@ class WebAppMedia(
 	}
 
 
-	fun topResumedActivityChange(isTopResumedActivity: Boolean) {
+	/**
+	 *	// onPause és onWindowFocusChanged
+	 */
+	fun windowPause() {
+		WebApp.FOCUS = false
+		parameters?.let { params ->
+			params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+			activity.windowManager.updateViewLayout(webview, params)
+		}
+		windowFocusChange(false)
+	}
+
+	/**
+	 *	// onPause és onWindowFocusChanged
+	 */
+	fun windowFocusChange(hasFocus: Boolean) {
 		if (Settings.canDrawOverlays(activity)) parameters?.let { params ->
 			// onResume:
-			if (isTopResumedActivity) {
+			if (hasFocus) {
 
-				webview.apply {
-					isClickable = true
-					isFocusable = true
-					isFocusableInTouchMode = true
-					requestFocus()
-				}
+				webview.isClickable = true
 
 				val display = activity.windowManager.currentWindowMetrics.bounds
 				params.horizontalMargin = 0.0f
 				params.width = display.width()
 				params.height = display.height()
 				params.flags = params.flags and (
-						WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
 						WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
 						WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
 				).inv()
@@ -956,13 +978,11 @@ class WebAppMedia(
 				else firstResumeSkipped = true
 			}
 			// OnPause:
-			else {
+			else if (!WebApp.FOCUS) {
 				screenOn = powerManager.isInteractive
 
 				webview.apply {
 					isClickable = false
-					isFocusable = false
-					isFocusableInTouchMode = false
 					evaluateJavascript("if (typeof androidFocus === 'function') androidFocus(false);", null)
 					animate().alpha(0f).setDuration(200).startDelay = 0
 				}
@@ -970,7 +990,6 @@ class WebAppMedia(
 				MAIN_LOOPER.postDelayed({
 					params.horizontalMargin = -1.0f
 					params.flags = params.flags or
-							WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
 							WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
 							WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
 
@@ -980,10 +999,21 @@ class WebAppMedia(
 		}
 	}
 
+
 	fun destroy() {
 		stop(true)
 		onEventsCallback = null
 		parameters = null
+	}
+
+	companion object {
+		const val START		= 0
+		const val PLAY		= 1
+		const val PAUSE		= 2
+		const val PREV		= 3
+		const val NEXT		= 4
+		const val CHANGED	= 5
+		const val STOP		= 6
 	}
 }
 
@@ -1323,9 +1353,35 @@ private var defaultAPI = """
 		})
 	);
 
-	wnd.addEventListener('touchmove', (e) => {
-		if (e.touches[0].clientY > (wnd.screen.height * 0.93)) e.preventDefault();
+
+	let skipperTimer = 0, lastFocus = false, lastTarget = null;
+	const hasFocus = (target, focus) => {
+		if (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA' && !target.hasAttribute('contenteditable')) return;
+		clearTimeout(skipperTimer);
+		skipperTimer = setTimeout(() => {
+			if (lastFocus === focus) return;
+			lastFocus = focus;
+			lastTarget = target;
+			if (!focus) target.blur();
+			if (wnd.android) wnd.android.command('kotlinFocusChanged', focus);
+			else console.log(focus);
+		}, 50);
+	}
+
+	doc.addEventListener('focusin', e => hasFocus(e.target, true) );
+
+	doc.addEventListener('focusout', e => hasFocus(e.target, false) );
+
+	doc.addEventListener('touchstart', e => {
+		if (e.touches[0].clientY > (wnd.innerHeight * 0.9)) {
+			lastTarget?.apply(target => hasFocus(target, false));
+		}
+	});
+
+	wnd.addEventListener('touchmove', e => {
+		if (e.cancelable && e.touches[0].clientY > (wnd.innerHeight * 0.9)) e.preventDefault();
 	}, { passive: false });
+
 
 	if (!edgeToEdge) return;
 

@@ -23,6 +23,8 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -313,6 +315,8 @@ class WebApp(
 			}
 		}
 
+	var disableLoadingFadein = false
+
 	/**
 	 *	// Érintés a kijelző pixelein
 	 */
@@ -327,7 +331,18 @@ class WebApp(
 			?.flatMap { it.inetAddresses.asSequence() }
 			?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
 
-		return address?.hostAddress.toString()
+		return address?.hostAddress ?: ""
+	}
+
+	/**
+	 *	// SDK37 kötelező helyi hálózathoz !
+	 */
+	fun localNetworkPermission() {
+		if (Build.VERSION.SDK_INT >= 37) {
+			if (activity.checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != PackageManager.PERMISSION_GRANTED) {
+				activity.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", activity.packageName, null)))
+			}
+		}
 	}
 
 	fun fullScreen(mode: Boolean) {
@@ -347,6 +362,10 @@ class WebApp(
 
 	fun back() {
 		if (innerWebView.canGoBack()) innerWebView.goBack()
+	}
+
+	fun close() {
+		activity.finishAffinity()
 	}
 
 	/**
@@ -396,7 +415,6 @@ class WebApp(
 		innerWebView = WebView(appContext).apply {
 			keepScreenOn = true
 			scrollBarSize = 0
-			alpha = 0f
 			settings.apply {
 				javaScriptEnabled = true
 				domStorageEnabled = true
@@ -682,7 +700,7 @@ class WebApp(
 			if (!loaded) return
 			loaded = false
 			view?.let { wv ->
-				wv.alpha = 0f
+				if (!disableLoadingFadein) wv.alpha = 0f
 				onEventsCallback?.invoke(STARTED, url)
 			}
 		}
@@ -698,7 +716,7 @@ class WebApp(
 					// Bar színek:
 					if (windowStyle == STYLE_EDGE_TO_EDGE) edgeToEdgeBarColors()
 					// Fade-in
-					wv.animate().alpha(1f).setDuration(600).startDelay = 0
+					if (!disableLoadingFadein) wv.animate().alpha(1f).setDuration(600).startDelay = 0
 				}
 			}
 		}
@@ -731,7 +749,7 @@ class WebApp(
 			input.startsWith("http") -> {
 				innerWebView.loadUrl(input)
 			}
-			input.endsWith(".html") -> {
+			input.substringBefore("?").endsWith(".html", ignoreCase = true) -> {
 				innerWebView.loadUrl("file:///android_asset/$input")
 			}
 			else -> {
@@ -1338,7 +1356,7 @@ class WebAppPlaybackService : MediaSessionService() {
 private var defaultAPI = """
 (function(wnd, doc, edgeToEdge) {
 
-	if (wnd.webAppWebView) return;
+	if (wnd.webAppWebView || !doc.head) return;
 	wnd.webAppWebView = 1;
 
 	typeof Object.prototype.params!=='function'&&Object.defineProperty(Object.prototype,'params',{value:function(o){if(o&&typeof o==='object')Object.assign(this,o);return this},writable:!0,configurable:!0});typeof Element.prototype.apply!=='function'&&Object.defineProperty(Element.prototype,'apply',{value:function(b){return typeof b==='function'?b.call(this,this)??this:this},writable:!0,configurable:!0});
